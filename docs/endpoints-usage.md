@@ -346,12 +346,28 @@ curl -H "X-Api-Key: your-key" \
    - Region-specific: `en-US`, `en-GB`, `pt-BR`
    - Platform-specific: `eng-US`, `ara-SA` (TikTok format)
 
-3. **Best Practices**:
+3. **Platform-Specific Language Codes**:
+
+   **Arabic variations**:
+   - TikTok: `ara-SA` (Arabic - Saudi Arabia)
+   - YouTube: `ar` (generic Arabic)
+   - Other platforms: `ar-SA`, `ar-EG`, etc.
+
+   **English variations**:
+   - TikTok: `eng-US` (English - US)
+   - YouTube: `en`, `en-US`, `en-GB`
+   - Other platforms: various regional formats
+
+   **Important**: Always use the exact code returned by `/transcription/locales` when calling `/transcription`. The same language can have different codes on different platforms.
+
+4. **Best Practices**:
    - Call this endpoint before `/transcription` to verify language availability
    - Prefer manual subtitles over auto-generated when both are available
    - Cache the results as subtitle availability rarely changes
 
-### Integration Example
+### Integration Examples
+
+**Finding the correct language code across platforms:**
 
 ```javascript
 // Get available languages first
@@ -360,17 +376,47 @@ const localesResponse = await fetch('http://localhost:8000/transcription/locales
 });
 const locales = await localesResponse.json();
 
-// Check if desired language is available
+// Example 1: Finding English (varies by platform)
 const englishLocale = locales.locales.find(l => 
-  l.code === 'en' || l.code === 'en-US' || l.code === 'eng-US'
+  l.code === 'en' ||        // YouTube
+  l.code === 'en-US' ||     // YouTube regional
+  l.code === 'eng-US'       // TikTok
 );
 
+// Example 2: Finding Arabic (varies by platform)  
+const arabicLocale = locales.locales.find(l =>
+  l.code === 'ar' ||        // YouTube
+  l.code === 'ara-SA' ||    // TikTok
+  l.code === 'ar-SA'        // Other platforms
+);
+
+// Use the exact code found
 if (englishLocale) {
-  // Request transcription with the exact code
   const transcriptResponse = await fetch(
     `http://localhost:8000/transcription?url=${videoUrl}&lang=${englishLocale.code}`,
     { headers: { 'X-Api-Key': apiKey } }
   );
+}
+```
+
+**Platform-aware approach:**
+
+```javascript
+// Better approach: Use the language name from the response
+const locales = await getLocales(videoUrl);
+
+// Find by language name (more reliable across platforms)
+const arabicLocale = locales.locales.find(l => 
+  l.name.toLowerCase().includes('arabic')
+);
+
+const englishLocale = locales.locales.find(l => 
+  l.name.toLowerCase().includes('english')
+);
+
+// This works regardless of whether it's 'ar', 'ara-SA', etc.
+if (arabicLocale) {
+  await getTranscription(videoUrl, arabicLocale.code);
 }
 ```
 

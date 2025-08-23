@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a FastAPI-based social media video downloader that uses `yt-dlp` to download videos from platforms like YouTube, TikTok, Instagram, Facebook, Twitter, and more. The API streams videos directly to clients without storing them permanently on the server.
 
+## YT-DLP Usage and Options
+To learn about yt-dlp and its available suit of tools and options, check the following Github repo: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#usage-and-options
+
+
 ## Development Commands
 
 ### Environment Setup
@@ -16,7 +20,7 @@ source .venv/bin/activate  # Linux/Mac
 # or .venv\Scripts\activate  # Windows
 
 # Install dependencies
-uv add fastapi uvicorn yt-dlp python-multipart python-dotenv
+uv add fastapi uvicorn yt-dlp python-multipart python-dotenv requests
 ```
 
 ### Running the Application
@@ -75,6 +79,7 @@ Common format strings for quality selection:
 - **yt-dlp**: Core library for video extraction and downloading
 - **python-multipart**: For handling multipart form data
 - **python-dotenv**: Environment variable loading from .env files
+- **requests**: HTTP library for downloading subtitle content
 
 ## Platform Support
 
