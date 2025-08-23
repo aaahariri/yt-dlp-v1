@@ -142,7 +142,18 @@ Common language codes:
 - `zh` - Chinese
 - `ar` - Arabic
 
+**Note**: Language codes vary by platform:
+- YouTube: Often uses simple codes (`en`, `es`, `fr`)
+- TikTok: Uses region-specific codes (`eng-US`, `ara-SA`)
+- Use `/transcription/locales` endpoint to get exact codes for a video
+
 *Fallback: If specified language not found, tries `en`, `en-US`, `en-GB`*
+
+### Important Notes on Subtitle Availability
+
+1. **Check availability first**: Use `/transcription/locales` to verify which languages are available before requesting transcriptions
+2. **Platform variations**: Different platforms have different subtitle availability patterns
+3. **Manual vs Auto**: Manual subtitles are more accurate than auto-generated captions
 
 ### Example Requests
 
@@ -242,7 +253,130 @@ curl -H "X-Api-Key: your-key" \
 
 ---
 
-## 4. List Downloads Endpoint
+## 4. Get Available Transcription Locales Endpoint
+
+### `GET /transcription/locales`
+
+**Description**: Retrieves all available subtitle/caption languages for a video without downloading the video or subtitles. Useful for building language selectors and checking availability before requesting transcriptions.
+
+**Authentication**: Required
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | Yes | - | Video URL from any supported platform |
+
+### Example Request
+
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/transcription/locales?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+### Example Response
+
+```json
+{
+  "title": "Rick Astley - Never Gonna Give You Up",
+  "duration": 213,
+  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "locales": [
+    {
+      "code": "en",
+      "name": "English",
+      "type": ["manual"],
+      "formats": ["vtt", "srt"]
+    },
+    {
+      "code": "es",
+      "name": "Spanish",
+      "type": ["manual", "auto"],
+      "formats": ["vtt", "srt"]
+    },
+    {
+      "code": "fr",
+      "name": "French",
+      "type": ["auto"],
+      "formats": ["vtt"]
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "manual_count": 2,
+    "auto_count": 2,
+    "has_manual": true,
+    "has_auto": true
+  }
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `title` | Video title |
+| `duration` | Video duration in seconds |
+| `url` | Original video URL |
+| `locales` | Array of available language locales |
+| `locales[].code` | Language code (e.g., "en", "en-US", "ara-SA") |
+| `locales[].name` | Human-readable language name |
+| `locales[].type` | Array indicating subtitle type: ["manual"], ["auto"], or ["manual", "auto"] |
+| `locales[].formats` | Available subtitle formats (typically "vtt" or "srt") |
+| `summary.total` | Total number of available locales |
+| `summary.manual_count` | Number of languages with manual subtitles |
+| `summary.auto_count` | Number of languages with auto-generated captions |
+| `summary.has_manual` | Boolean indicating if any manual subtitles exist |
+| `summary.has_auto` | Boolean indicating if any auto-generated captions exist |
+
+### Subtitle Types
+
+- **Manual**: Human-created subtitles, typically higher quality and more accurate
+- **Auto**: Auto-generated captions using speech recognition (mainly on YouTube)
+
+### Usage Notes
+
+1. **Platform Differences**:
+   - YouTube often has both manual and auto-generated captions in many languages
+   - TikTok, Instagram, and other platforms typically only have manual subtitles
+   - Auto-generated captions may have transcription errors
+
+2. **Language Code Formats**:
+   - Simple codes: `en`, `es`, `fr`
+   - Region-specific: `en-US`, `en-GB`, `pt-BR`
+   - Platform-specific: `eng-US`, `ara-SA` (TikTok format)
+
+3. **Best Practices**:
+   - Call this endpoint before `/transcription` to verify language availability
+   - Prefer manual subtitles over auto-generated when both are available
+   - Cache the results as subtitle availability rarely changes
+
+### Integration Example
+
+```javascript
+// Get available languages first
+const localesResponse = await fetch('http://localhost:8000/transcription/locales?url=' + videoUrl, {
+  headers: { 'X-Api-Key': apiKey }
+});
+const locales = await localesResponse.json();
+
+// Check if desired language is available
+const englishLocale = locales.locales.find(l => 
+  l.code === 'en' || l.code === 'en-US' || l.code === 'eng-US'
+);
+
+if (englishLocale) {
+  // Request transcription with the exact code
+  const transcriptResponse = await fetch(
+    `http://localhost:8000/transcription?url=${videoUrl}&lang=${englishLocale.code}`,
+    { headers: { 'X-Api-Key': apiKey } }
+  );
+}
+```
+
+---
+
+## 5. List Downloads Endpoint
 
 ### `GET /downloads/list`
 

@@ -5,6 +5,8 @@ import uuid
 import json
 import hashlib
 import requests
+import unicodedata
+from urllib.parse import quote
 from datetime import datetime
 from fastapi import FastAPI, Query, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -104,6 +106,175 @@ def get_video_id_from_url(url: str) -> str:
     # Create a hash of the URL for consistent file naming
     return hashlib.md5(url.encode()).hexdigest()[:12]
 
+# Language code to name mapping for common languages
+LANGUAGE_NAMES = {
+    'en': 'English',
+    'en-US': 'English (US)',
+    'en-GB': 'English (UK)',
+    'eng-US': 'English (US)',
+    'es': 'Spanish',
+    'es-419': 'Spanish (Latin America)',
+    'es-ES': 'Spanish (Spain)',
+    'fr': 'French',
+    'fr-FR': 'French (France)',
+    'de': 'German',
+    'de-DE': 'German (Germany)',
+    'it': 'Italian',
+    'pt': 'Portuguese',
+    'pt-BR': 'Portuguese (Brazil)',
+    'pt-PT': 'Portuguese (Portugal)',
+    'ru': 'Russian',
+    'ja': 'Japanese',
+    'ko': 'Korean',
+    'zh': 'Chinese',
+    'zh-CN': 'Chinese (Simplified)',
+    'zh-TW': 'Chinese (Traditional)',
+    'ar': 'Arabic',
+    'ara-SA': 'Arabic (Saudi Arabia)',
+    'hi': 'Hindi',
+    'id': 'Indonesian',
+    'tr': 'Turkish',
+    'nl': 'Dutch',
+    'pl': 'Polish',
+    'sv': 'Swedish',
+    'no': 'Norwegian',
+    'da': 'Danish',
+    'fi': 'Finnish',
+    'he': 'Hebrew',
+    'th': 'Thai',
+    'vi': 'Vietnamese',
+    'uk': 'Ukrainian',
+    'cs': 'Czech',
+    'hu': 'Hungarian',
+    'ro': 'Romanian',
+    'bg': 'Bulgarian',
+    'sr': 'Serbian',
+    'hr': 'Croatian',
+    'sk': 'Slovak',
+    'sl': 'Slovenian',
+    'et': 'Estonian',
+    'lv': 'Latvian',
+    'lt': 'Lithuanian',
+    'ms': 'Malay',
+    'fa': 'Persian',
+    'ur': 'Urdu',
+    'bn': 'Bengali',
+    'ta': 'Tamil',
+    'te': 'Telugu',
+    'ml': 'Malayalam',
+    'kn': 'Kannada',
+    'mr': 'Marathi',
+    'gu': 'Gujarati',
+    'pa': 'Punjabi',
+    'ne': 'Nepali',
+    'si': 'Sinhala',
+    'my': 'Burmese',
+    'km': 'Khmer',
+    'lo': 'Lao',
+    'ka': 'Georgian',
+    'am': 'Amharic',
+    'sw': 'Swahili',
+    'zu': 'Zulu',
+    'xh': 'Xhosa',
+    'af': 'Afrikaans',
+    'sq': 'Albanian',
+    'eu': 'Basque',
+    'be': 'Belarusian',
+    'bs': 'Bosnian',
+    'ca': 'Catalan',
+    'co': 'Corsican',
+    'cy': 'Welsh',
+    'eo': 'Esperanto',
+    'et': 'Estonian',
+    'fil': 'Filipino',
+    'fy': 'Frisian',
+    'ga': 'Irish',
+    'gd': 'Scottish Gaelic',
+    'gl': 'Galician',
+    'ha': 'Hausa',
+    'haw': 'Hawaiian',
+    'hmn': 'Hmong',
+    'ht': 'Haitian Creole',
+    'ig': 'Igbo',
+    'is': 'Icelandic',
+    'jv': 'Javanese',
+    'kk': 'Kazakh',
+    'ku': 'Kurdish',
+    'ky': 'Kyrgyz',
+    'la': 'Latin',
+    'lb': 'Luxembourgish',
+    'mg': 'Malagasy',
+    'mi': 'Maori',
+    'mk': 'Macedonian',
+    'mn': 'Mongolian',
+    'mt': 'Maltese',
+    'ny': 'Chichewa',
+    'or': 'Odia',
+    'ps': 'Pashto',
+    'sd': 'Sindhi',
+    'sm': 'Samoan',
+    'sn': 'Shona',
+    'so': 'Somali',
+    'st': 'Southern Sotho',
+    'su': 'Sundanese',
+    'tg': 'Tajik',
+    'tk': 'Turkmen',
+    'tl': 'Tagalog',
+    'tt': 'Tatar',
+    'ug': 'Uyghur',
+    'uz': 'Uzbek',
+    'yi': 'Yiddish',
+    'yo': 'Yoruba'
+}
+
+def get_language_name(code: str) -> str:
+    """Get human-readable language name from code."""
+    # First try exact match
+    if code in LANGUAGE_NAMES:
+        return LANGUAGE_NAMES[code]
+    
+    # Try base language code (e.g., 'en' from 'en-US')
+    base_code = code.split('-')[0].lower()
+    if base_code in LANGUAGE_NAMES:
+        return f"{LANGUAGE_NAMES[base_code]} ({code})"
+    
+    # Return original code if no match found
+    return code
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename to be safe for filesystem while preserving Unicode."""
+    # Normalize Unicode characters
+    filename = unicodedata.normalize('NFC', filename)
+    # Replace path separators and other problematic characters
+    filename = filename.replace('/', '-').replace('\\', '-')
+    filename = filename.replace(':', '-').replace('*', '-')
+    filename = filename.replace('?', '-').replace('"', '-')
+    filename = filename.replace('<', '-').replace('>', '-')
+    filename = filename.replace('|', '-').replace('\0', '-')
+    # Remove leading/trailing spaces and dots
+    filename = filename.strip('. ')
+    # Limit length to prevent filesystem issues
+    if len(filename) > 200:
+        filename = filename[:200]
+    return filename or 'video'
+
+def encode_content_disposition_filename(filename: str) -> str:
+    """Encode filename for Content-Disposition header following RFC 5987."""
+    # For ASCII filenames, use simple format
+    try:
+        filename.encode('ascii')
+        # Escape quotes for the simple format
+        safe_filename = filename.replace('"', '\\"')
+        return f'attachment; filename="{safe_filename}"'
+    except UnicodeEncodeError:
+        # For Unicode filenames, use RFC 5987 encoding
+        encoded_filename = quote(filename, safe='')
+        # Also provide ASCII fallback
+        ascii_filename = unicodedata.normalize('NFD', filename)
+        ascii_filename = ascii_filename.encode('ascii', 'ignore').decode('ascii')
+        ascii_filename = ascii_filename.replace('"', '\\"') or 'video'
+        return f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+
 @app.get("/download")
 async def download_video(
     url: str = Query(...), 
@@ -115,7 +286,8 @@ async def download_video(
         # Extract metadata
         with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
             info = ydl.extract_info(url, download=False)
-            title = info.get("title", "video").replace("/", "-").replace("\\", "-")
+            title = info.get("title", "video")
+            title = sanitize_filename(title)
             extension = "mp4"  # fallback extension
             filename = f"{title}.{extension}"
 
@@ -123,8 +295,8 @@ async def download_video(
         if keep:
             # Save to downloads directory with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
-            safe_title = safe_title.replace(' ', '_')
+            # Keep Unicode characters but remove filesystem-unsafe chars
+            safe_title = sanitize_filename(title).replace(' ', '_')
             saved_filename = f"{safe_title}_{timestamp}.%(ext)s"
             output_template = os.path.join(DOWNLOADS_DIR, saved_filename)
         else:
@@ -169,7 +341,7 @@ async def download_video(
                 os.unlink(actual_file_path)  # only clean up temp files
 
         # Prepare response headers
-        response_headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        response_headers = {"Content-Disposition": encode_content_disposition_filename(filename)}
         if keep:
             saved_path = os.path.relpath(actual_file_path, start=".")
             response_headers["X-Server-Path"] = saved_path
@@ -366,6 +538,99 @@ async def get_transcription(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error extracting transcription: {str(e)}")
+
+@app.get("/transcription/locales")
+async def get_transcription_locales(
+    url: str = Query(...),
+    _: bool = Depends(verify_api_key)
+):
+    """Get available subtitle/caption locales for a video without downloading."""
+    try:
+        # Configure yt-dlp to extract subtitle information
+        ydl_opts = {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'skip_download': True,
+            'quiet': True,
+            'subtitleslangs': ['all'],  # Request all available languages
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            # Get video metadata
+            title = info.get("title", "Unknown")
+            duration = info.get("duration", 0)
+            
+            # Extract subtitle information
+            manual_subs = info.get('subtitles', {})
+            auto_subs = info.get('automatic_captions', {})
+            
+            # Build locales list
+            locales = []
+            all_langs = set()
+            
+            # Process manual subtitles
+            for lang_code, formats in manual_subs.items():
+                all_langs.add(lang_code)
+                # Get available formats for this language
+                available_formats = list(set([f.get('ext') for f in formats if f.get('ext')]))
+                
+                locale = {
+                    'code': lang_code,
+                    'name': get_language_name(lang_code),
+                    'type': ['manual'],
+                    'formats': available_formats
+                }
+                locales.append(locale)
+            
+            # Process auto-generated subtitles
+            for lang_code, formats in auto_subs.items():
+                available_formats = list(set([f.get('ext') for f in formats if f.get('ext')]))
+                
+                if lang_code in all_langs:
+                    # Language already exists with manual subs, add auto type
+                    for locale in locales:
+                        if locale['code'] == lang_code:
+                            if 'auto' not in locale['type']:
+                                locale['type'].append('auto')
+                            # Merge formats
+                            locale['formats'] = list(set(locale['formats'] + available_formats))
+                            break
+                else:
+                    # New language with only auto subs
+                    locale = {
+                        'code': lang_code,
+                        'name': get_language_name(lang_code),
+                        'type': ['auto'],
+                        'formats': available_formats
+                    }
+                    locales.append(locale)
+                    all_langs.add(lang_code)
+            
+            # Sort locales by code for consistency
+            locales.sort(key=lambda x: x['code'])
+            
+            # Calculate summary statistics
+            manual_count = len([l for l in locales if 'manual' in l['type']])
+            auto_count = len([l for l in locales if 'auto' in l['type']])
+            
+            return {
+                'title': title,
+                'duration': duration,
+                'url': url,
+                'locales': locales,
+                'summary': {
+                    'total': len(locales),
+                    'manual_count': manual_count,
+                    'auto_count': auto_count,
+                    'has_manual': manual_count > 0,
+                    'has_auto': auto_count > 0
+                }
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error extracting locales: {str(e)}")
 
 @app.get("/downloads/list")
 async def list_downloads(_: bool = Depends(verify_api_key)):
