@@ -26,17 +26,17 @@ python main.py
 
 ### Example Usage
 ```bash
-# Set API key for all requests
-API_KEY="test-api-key-12345"
-
 # Download 720p video (temporary)
 curl -H "X-Api-Key: $API_KEY" "http://localhost:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=best[height<=720]"
 
 # Download and keep video on server
 curl -H "X-Api-Key: $API_KEY" "http://localhost:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=best[height<=720]&keep=true"
 
-# Get video transcription
-curl -H "X-Api-Key: $API_KEY" "http://localhost:8000/transcription?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=en&format=json"
+# Get video transcription (text format)
+curl -H "X-Api-Key: $API_KEY" "http://localhost:8000/transcription?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=en&format=text"
+
+# Get structured transcription with timestamps
+curl -H "X-Api-Key: $API_KEY" "http://localhost:8000/transcription?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=en&format=segments"
 
 # List saved videos
 curl -H "X-Api-Key: $API_KEY" "http://localhost:8000/downloads/list"
