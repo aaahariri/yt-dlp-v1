@@ -62,3 +62,26 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 → **IMPACT**: Can safely download 20+ videos in one session without triggering blocks
 - Files: `batch_download.py`
 - Tags: #feature #tooling #automation #rate-limiting
+
+2025-11-01 | [DOCS] | [SCRIPTS] | Comprehensive local scripts documentation
+→ Created detailed documentation for batch_download.py and local utility scripts
+→ **WHAT**:
+  - New docs/local-scripts.md file with complete usage guide
+  - Platform support clarification (YouTube default, adaptable for 1000+ platforms)
+  - File format handling explanation (MP4 default, supports many formats via yt-dlp)
+  - URL list management instructions
+  - Customization examples for TikTok, Instagram, Twitter, etc.
+  - Troubleshooting section
+  - Best practices and performance tips
+→ **WHY**:
+  - Users unclear about platform support (YouTube-only vs multi-platform)
+  - File format handling needed explanation
+  - URL list location not obvious (hardcoded in script)
+  - Adaptation for other platforms required documentation
+→ **IMPACT**:
+  - Clear understanding of script capabilities and limitations
+  - Easy customization for other platforms
+  - Reduced support questions
+  - Better user experience for batch downloading
+- Files: `docs/local-scripts.md`
+- Tags: #docs #scripts #batch-download #multi-platform
