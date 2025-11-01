@@ -21,95 +21,29 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
-2025-11-01 | [FEATURE] | [API] | Enhanced filename formatting with platform prefixes and consistent naming
-→ Added intelligent title formatting that removes channel names, applies platform prefixes (YT, TT, IG, etc.), and ensures consistent truncation at 50 characters for clean, predictable filenames
-→ **WHAT**:
-  - New utility functions: `get_platform_prefix()`, `format_title_for_filename()`, `create_formatted_filename()`
-  - Automatic removal of channel name suffixes (text after | or -)
-  - Platform-specific prefixes: YouTube→YT, TikTok→TT, Instagram→IG, Facebook→FB, Twitter→X, Vimeo→VM
-  - Title truncation at 50 chars with intelligent word boundary detection
-  - Spaces replaced with hyphens for filesystem compatibility
-→ **WHY**:
-  - Eliminate filename inconsistencies (e.g., "Inter-Equity" vs "Inter-Equity-Trading")
-  - Improve file organization and searchability
-  - Ensure cross-platform compatibility
-  - Make filenames predictable and readable
-→ **IMPACT**:
-  - Filename format: `{PLATFORM}-{formatted-title}.{ext}` (e.g., `YT-Liquidity-Inducement-Masterclass-Ep.-1.mp4`)
-  - All existing files renamed for consistency
-  - Batch download script updated with same formatting logic
-  - API endpoint accepts optional `custom_title` parameter for user-defined names
-- Files: `main.py`, `batch_download.py`
-- Tags: #feature #api #filenames #formatting #consistency
-
-2025-11-01 | [FEATURE] | [API] | Added custom_title parameter to /download endpoint
-→ Allows users to specify custom filenames while maintaining platform prefix and formatting rules
-→ **WHAT**: New optional query parameter `custom_title` in `/download` endpoint
-→ **WHY**: Give users control over downloaded filenames when original titles are too long or unclear
-→ **IMPACT**: `GET /download?url=<url>&custom_title=My Custom Name` → saves as `YT-My-Custom-Name.mp4`
-- Files: `main.py`
-- Tags: #feature #api #customization
-
-2025-11-01 | [FEATURE] | [TOOLING] | Created batch download script with anti-rate-limiting
-→ Python script to download multiple YouTube videos with random 20-30 second pauses between downloads to avoid YouTube rate limiting
-→ **WHAT**:
-  - `batch_download.py` - Batch downloader with progress tracking
-  - Random pauses (20-30s) between downloads
-  - Skip already downloaded files
-  - Beautiful console output with progress indicators
-  - Error handling and retry logic
-→ **WHY**: Enable efficient bulk downloading while respecting YouTube's rate limits
-→ **IMPACT**: Can safely download 20+ videos in one session without triggering blocks
-- Files: `batch_download.py`
-- Tags: #feature #tooling #automation #rate-limiting
-
-2025-11-01 | [DOCS] | [SCRIPTS] | Comprehensive local scripts documentation
-→ Created detailed documentation for batch_download.py and local utility scripts
-→ **WHAT**:
-  - New docs/local-scripts.md file with complete usage guide
-  - Platform support clarification (YouTube default, adaptable for 1000+ platforms)
-  - File format handling explanation (MP4 default, supports many formats via yt-dlp)
-  - URL list management instructions
-  - Customization examples for TikTok, Instagram, Twitter, etc.
-  - Troubleshooting section
-  - Best practices and performance tips
-→ **WHY**:
-  - Users unclear about platform support (YouTube-only vs multi-platform)
-  - File format handling needed explanation
-  - URL list location not obvious (hardcoded in script)
-  - Adaptation for other platforms required documentation
-→ **IMPACT**:
-  - Clear understanding of script capabilities and limitations
-  - Easy customization for other platforms
-  - Reduced support questions
-  - Better user experience for batch downloading
-- Files: `docs/local-scripts.md`
-- Tags: #docs #scripts #batch-download #multi-platform
-
 2025-11-01 | [FEATURE] | [API] | Batch download API endpoint with multi-platform support
-→ Added POST /batch-download endpoint for downloading multiple videos dynamically with automatic platform detection
-→ **WHAT**:
-  - New POST /batch-download endpoint accepting JSON array of video URLs
-  - Pydantic models: BatchDownloadRequest, VideoDownloadResult, BatchDownloadResponse
-  - Automatic platform detection using existing get_platform_prefix() function
-  - Configurable delays (min_delay, max_delay) for rate limiting
-  - Mixed platform batch support (YouTube + TikTok + Instagram in one request)
-  - Comprehensive JSON response with success/failure breakdown per video
-  - Error handling for each video independently (one failure doesn't stop batch)
-  - Skip already downloaded files functionality
-  - Support for cookies_file parameter for authenticated downloads
-→ **WHY**:
-  - Enable dynamic batch downloading via API (vs hardcoded script)
-  - Support multiple platforms in single request
-  - Provide programmatic access for integrations
-  - Avoid rate limiting with built-in delays
-  - Give detailed feedback on each video's download status
-→ **IMPACT**:
-  - Format: POST /batch-download with JSON body containing urls array
-  - Returns: { total, successful, failed, skipped, downloads[], total_size, duration_seconds }
-  - Each download result includes: url, success, filename, file_path, file_size, platform, title, error
-  - Automatically applies platform prefixes (YT-, TT-, IG-, FB-, X-, etc.)
-  - Rate limiting prevents platform blocks/bans
-  - Can be integrated into other applications via REST API
+- Added POST /batch-download endpoint for downloading multiple videos with automatic platform detection
+- Pydantic models for type-safe requests, configurable rate limiting, comprehensive error handling
 - Files: `main.py`, `docs/batch-download-api.md`, `test_batch_request.json`
-- Tags: #feature #api #batch-download #multi-platform #automation
+- Tags: #feature #api #batch-download #multi-platform
+
+2025-11-01 | [DOCS] | [SCRIPTS] | Local scripts documentation
+- Created docs/local-scripts.md with usage guide for batch_download.py
+- Files: `docs/local-scripts.md`
+- Tags: #docs #scripts
+
+2025-11-01 | [FEATURE] | [TOOLING] | Batch download script with rate limiting
+- Created batch_download.py for bulk downloads with 20-30s random pauses
+- Files: `batch_download.py`
+- Tags: #feature #tooling
+
+2025-11-01 | [FEATURE] | [API] | Custom title parameter for downloads
+- Added custom_title parameter to /download endpoint
+- Files: `main.py`
+- Tags: #feature #api
+
+2025-11-01 | [FEATURE] | [API] | Platform prefix filename formatting
+- Added get_platform_prefix(), format_title_for_filename(), create_formatted_filename()
+- Consistent naming: {PLATFORM}-{title}.{ext} with 50 char limit
+- Files: `main.py`, `batch_download.py`
+- Tags: #feature #filenames

@@ -261,81 +261,190 @@ def sanitize_filename(filename: str) -> str:
     return filename or 'video'
 
 def get_platform_prefix(url: str) -> str:
-    """Extract platform prefix from URL."""
+    """
+    Extract platform-specific prefix from video URL.
+
+    This function analyzes the URL to determine which platform the video is from
+    and returns a short prefix code for consistent filename formatting.
+
+    Args:
+        url (str): Full video URL (e.g., "https://www.youtube.com/watch?v=...")
+
+    Returns:
+        str: Platform prefix code:
+             - 'YT'    = YouTube
+             - 'TT'    = TikTok
+             - 'IG'    = Instagram
+             - 'FB'    = Facebook
+             - 'X'     = Twitter/X
+             - 'VM'    = Vimeo
+             - 'DM'    = DailyMotion
+             - 'TW'    = Twitch
+             - 'VIDEO' = Unknown/other platforms
+
+    Example:
+        >>> get_platform_prefix("https://www.youtube.com/watch?v=abc123")
+        'YT'
+        >>> get_platform_prefix("https://www.tiktok.com/@user/video/123")
+        'TT'
+    """
     url_lower = url.lower()
+
+    # Check for YouTube URLs (including shortened youtu.be links)
     if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
         return 'YT'
+    # Check for TikTok URLs
     elif 'tiktok.com' in url_lower:
         return 'TT'
+    # Check for Instagram URLs (posts, reels, IGTV)
     elif 'instagram.com' in url_lower:
         return 'IG'
+    # Check for Facebook URLs (including shortened fb.watch links)
     elif 'facebook.com' in url_lower or 'fb.watch' in url_lower:
         return 'FB'
+    # Check for Twitter/X URLs (both twitter.com and x.com)
     elif 'twitter.com' in url_lower or 'x.com' in url_lower:
         return 'X'
+    # Check for Vimeo URLs
     elif 'vimeo.com' in url_lower:
         return 'VM'
+    # Check for DailyMotion URLs
     elif 'dailymotion.com' in url_lower:
         return 'DM'
+    # Check for Twitch URLs
     elif 'twitch.tv' in url_lower:
         return 'TW'
+    # Default for unknown platforms (yt-dlp supports 1000+ sites)
     else:
         return 'VIDEO'
 
 def format_title_for_filename(title: str, max_length: int = 50) -> str:
-    """Format title for filename: truncate, replace spaces with hyphens, remove special chars."""
-    # Remove channel name suffix (everything after | or -)
+    """
+    Format video title into a clean, filesystem-safe filename.
+
+    This function:
+    1. Removes channel name suffixes (e.g., "Video | Channel" → "Video")
+    2. Sanitizes special characters
+    3. Replaces spaces with hyphens
+    4. Truncates to specified length at word boundaries
+    5. Ensures consistent formatting across all downloads
+
+    Args:
+        title (str): Raw video title from platform (e.g., "My Video Title | Channel Name")
+        max_length (int): Maximum character length (default: 50)
+
+    Returns:
+        str: Formatted filename-safe title (e.g., "My-Video-Title")
+
+    Example:
+        >>> format_title_for_filename("Liquidity Masterclass Ep. 1 | Inter Equity")
+        'Liquidity-Masterclass-Ep.-1'
+
+    Note:
+        Prevents inconsistent filenames like:
+        - "Inter-Equity" vs "Inter-Equity-Trading" (different channel name truncations)
+        By removing channel names entirely before truncation.
+    """
+    # Step 1: Remove channel name suffix (everything after | or -)
     # Common patterns: "Video Title | Channel Name" or "Video Title - Channel Name"
     if '|' in title:
+        # Split on pipe character and take first part
         title = title.split('|')[0].strip()
     elif ' - ' in title and len(title.split(' - ')[-1]) < 30:
-        # Only split on " - " if the last part looks like a channel name (short)
+        # Only split on " - " if the last part looks like a channel name (short segment)
         parts = title.split(' - ')
         if len(parts) > 1:
             # Check if last part might be a channel name (no common title words)
             last_part = parts[-1].lower()
+            # Don't remove if it contains episode/part indicators
             if not any(word in last_part for word in ['ep', 'part', 'tutorial', 'guide', 'how']):
                 title = ' - '.join(parts[:-1]).strip()
 
-    # First sanitize to remove problematic characters
+    # Step 2: Sanitize to remove problematic filesystem characters
+    # Uses sanitize_filename() to handle: / \ : * ? " < > | etc.
     title = sanitize_filename(title)
 
-    # Replace multiple spaces with single space
+    # Step 3: Normalize whitespace
+    # Replace multiple spaces/tabs with single space
     title = re.sub(r'\s+', ' ', title)
 
-    # Replace spaces with hyphens
+    # Step 4: Replace spaces with hyphens for URL-friendly format
     title = title.replace(' ', '-')
 
-    # Replace multiple consecutive hyphens with single hyphen
+    # Step 5: Clean up multiple consecutive hyphens
+    # "word--word" → "word-word"
     title = re.sub(r'-+', '-', title)
 
-    # Remove leading/trailing hyphens
+    # Step 6: Remove leading/trailing hyphens
+    # "-word-" → "word"
     title = title.strip('-')
 
-    # Truncate to max_length
+    # Step 7: Truncate to max_length intelligently
     if len(title) > max_length:
-        # Try to truncate at last hyphen before max_length
+        # Try to truncate at last hyphen before max_length (word boundary)
         truncated = title[:max_length]
         last_hyphen = truncated.rfind('-')
-        if last_hyphen > max_length // 2:  # Only use hyphen if it's past halfway point
+        # Only use hyphen if it's past halfway point (avoid cutting too early)
+        if last_hyphen > max_length // 2:
             title = truncated[:last_hyphen]
         else:
+            # No good hyphen found, hard truncate
             title = truncated
 
+    # Return formatted title or fallback to 'video' if empty
     return title or 'video'
 
 def create_formatted_filename(url: str, title: str, extension: str = 'mp4', custom_title: str = None) -> str:
-    """Create formatted filename with platform prefix and formatted title."""
+    """
+    Create fully formatted filename with platform prefix.
+
+    Combines platform detection and title formatting to create consistent
+    filenames across all downloaded videos.
+
+    Args:
+        url (str): Video URL (used to detect platform)
+        title (str): Original video title from platform
+        extension (str): File extension (default: 'mp4')
+        custom_title (str, optional): User-provided title override
+
+    Returns:
+        str: Formatted filename in format: {PLATFORM}-{formatted-title}.{ext}
+
+    Examples:
+        >>> create_formatted_filename(
+        ...     "https://youtube.com/watch?v=abc",
+        ...     "My Video | Channel Name",
+        ...     "mp4"
+        ... )
+        'YT-My-Video.mp4'
+
+        >>> create_formatted_filename(
+        ...     "https://tiktok.com/@user/video/123",
+        ...     "Viral Dance",
+        ...     "mp4",
+        ...     custom_title="Custom Name"
+        ... )
+        'TT-Custom-Name.mp4'
+
+    Note:
+        Final filename format ensures:
+        - Platform identification (YT, TT, IG, etc.)
+        - No special characters
+        - Consistent length (50 char title max)
+        - Cross-platform filesystem compatibility
+    """
+    # Detect platform from URL (YT, TT, IG, etc.)
+    platform_prefix = get_platform_prefix(url)
+
     if custom_title:
-        # Use custom title if provided
+        # Use custom title if provided by user
         formatted_title = format_title_for_filename(custom_title)
-        platform_prefix = get_platform_prefix(url)
-        return f"{platform_prefix}-{formatted_title}.{extension}"
     else:
-        # Use extracted title with platform prefix
+        # Use extracted title from video metadata
         formatted_title = format_title_for_filename(title)
-        platform_prefix = get_platform_prefix(url)
-        return f"{platform_prefix}-{formatted_title}.{extension}"
+
+    # Combine: PLATFORM-title.ext (e.g., "YT-My-Video.mp4")
+    return f"{platform_prefix}-{formatted_title}.{extension}"
 
 def encode_content_disposition_filename(filename: str) -> str:
     """Encode filename for Content-Disposition header following RFC 5987."""
@@ -448,8 +557,39 @@ async def download_video(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during download: {str(e)}")
 
-# Pydantic models for batch download
+# ============================================================================
+# PYDANTIC DATA MODELS FOR BATCH DOWNLOAD API
+# ============================================================================
+# These are data validation models (NOT AI models) used by FastAPI to:
+# 1. Validate incoming request data (type checking, constraints)
+# 2. Generate automatic API documentation (OpenAPI/Swagger)
+# 3. Provide type-safe request/response handling
+# ============================================================================
+
 class BatchDownloadRequest(BaseModel):
+    """
+    Request model for batch video downloads.
+
+    This data model validates and structures the incoming POST request
+    to the /batch-download endpoint.
+
+    Attributes:
+        urls (List[str]): Array of video URLs to download (min: 1 URL required)
+        format (str): yt-dlp format selector (default: "best[height<=720]" = 720p)
+        keep (bool): Whether to save videos to server (default: True)
+        min_delay (int): Minimum seconds to wait between downloads (0-300)
+        max_delay (int): Maximum seconds to wait between downloads (0-300)
+        cookies_file (Optional[str]): Path to cookies file for authenticated downloads
+
+    Example JSON:
+        {
+            "urls": ["https://youtube.com/watch?v=abc", "https://tiktok.com/@user/video/123"],
+            "format": "best[height<=720]",
+            "keep": true,
+            "min_delay": 10,
+            "max_delay": 20
+        }
+    """
     urls: List[str] = Field(..., description="List of video URLs to download", min_items=1)
     format: str = Field("best[height<=720]", description="Video quality format")
     keep: bool = Field(True, description="Save videos to server storage")
@@ -458,6 +598,42 @@ class BatchDownloadRequest(BaseModel):
     cookies_file: Optional[str] = Field(None, description="Path to cookies file")
 
 class VideoDownloadResult(BaseModel):
+    """
+    Result model for individual video download in batch.
+
+    Represents the outcome of downloading a single video within a batch request.
+    Each video gets its own result object regardless of success/failure.
+
+    Attributes:
+        url (str): Original video URL
+        success (bool): Whether download succeeded
+        filename (str, optional): Generated filename with platform prefix
+        file_path (str, optional): Relative path to downloaded file
+        file_size (int, optional): File size in bytes
+        platform (str, optional): Detected platform code (YT, TT, IG, etc.)
+        title (str, optional): Extracted video title
+        error (str, optional): Error message if download failed (None if successful)
+
+    Example (success):
+        {
+            "url": "https://youtube.com/watch?v=abc",
+            "success": true,
+            "filename": "YT-My-Video.mp4",
+            "file_path": "./downloads/YT-My-Video.mp4",
+            "file_size": 15728640,
+            "platform": "YT",
+            "title": "My Video",
+            "error": null
+        }
+
+    Example (failure):
+        {
+            "url": "https://youtube.com/watch?v=xyz",
+            "success": false,
+            "filename": null,
+            "error": "Video unavailable"
+        }
+    """
     url: str
     success: bool
     filename: Optional[str] = None
@@ -468,6 +644,36 @@ class VideoDownloadResult(BaseModel):
     error: Optional[str] = None
 
 class BatchDownloadResponse(BaseModel):
+    """
+    Response model for batch download endpoint.
+
+    Provides comprehensive summary of batch download operation including
+    overall statistics and detailed results for each video.
+
+    Attributes:
+        total (int): Total number of videos requested
+        successful (int): Number of successfully downloaded videos
+        failed (int): Number of failed downloads
+        skipped (int): Number of skipped videos (already downloaded)
+        downloads (List[VideoDownloadResult]): Detailed results for each video
+        total_size (int): Total size of all downloads in bytes
+        duration_seconds (float): Total time taken for batch operation
+
+    Example:
+        {
+            "total": 3,
+            "successful": 2,
+            "failed": 1,
+            "skipped": 0,
+            "downloads": [ ... ],
+            "total_size": 24673760,
+            "duration_seconds": 45.23
+        }
+
+    Note:
+        The downloads array always contains all videos (successful + failed + skipped)
+        so clients can see exactly what happened to each URL.
+    """
     total: int
     successful: int
     failed: int
@@ -482,56 +688,98 @@ async def batch_download_videos(
     _: bool = Depends(verify_api_key)
 ) -> BatchDownloadResponse:
     """
-    Download multiple videos from various platforms in batch.
+    Batch download endpoint for multiple videos from various platforms.
 
-    Supports YouTube, TikTok, Instagram, Facebook, Twitter, and 1000+ platforms.
-    Downloads are processed sequentially with configurable delays to avoid rate limiting.
+    This endpoint accepts an array of video URLs and downloads them sequentially
+    with configurable delays to prevent rate limiting/IP bans.
+
+    Key Features:
+    - Automatic platform detection (YouTube, TikTok, Instagram, etc.)
+    - Independent error handling (one failure doesn't stop the batch)
+    - Skip already downloaded files
+    - Configurable rate limiting delays
+    - Mixed platform support in single request
+    - Comprehensive result reporting
+
+    Supports 1000+ platforms via yt-dlp including:
+    YouTube, TikTok, Instagram, Facebook, Twitter, Vimeo, DailyMotion, Twitch, etc.
+
+    Args:
+        request: BatchDownloadRequest with URLs, format, delays, etc.
+
+    Returns:
+        BatchDownloadResponse with comprehensive stats and per-video results
+
+    Example Request:
+        POST /batch-download
+        {
+            "urls": ["https://youtube.com/watch?v=abc", "https://tiktok.com/@user/video/123"],
+            "format": "best[height<=720]",
+            "keep": true,
+            "min_delay": 10,
+            "max_delay": 20
+        }
     """
     import random
 
+    # Start timer for duration tracking
     start_time = time.time()
-    results: List[VideoDownloadResult] = []
-    successful = 0
-    failed = 0
-    skipped = 0
-    total_size = 0
 
-    # Ensure downloads directory exists
+    # Initialize tracking variables
+    results: List[VideoDownloadResult] = []  # Detailed results for each video
+    successful = 0  # Count of successful downloads
+    failed = 0      # Count of failed downloads
+    skipped = 0     # Count of skipped downloads (already exist)
+    total_size = 0  # Total bytes downloaded
+
+    # Ensure downloads directory exists before processing
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
+    # ========================================================================
+    # MAIN LOOP: Process each video sequentially
+    # ========================================================================
     for idx, url in enumerate(request.urls, 1):
+        # Initialize result object for this video (default: failed)
         result = VideoDownloadResult(url=url, success=False)
 
         try:
-            # Detect platform
+            # ----------------------------------------------------------------
+            # STEP 1: Detect platform and extract metadata
+            # ----------------------------------------------------------------
+            # Detect platform from URL (YT, TT, IG, etc.)
             platform_prefix = get_platform_prefix(url)
             result.platform = platform_prefix
 
-            # Prepare yt-dlp options for metadata extraction
+            # Prepare yt-dlp options for metadata extraction (no download yet)
             meta_opts = {'quiet': True, 'skip_download': True}
             if request.cookies_file and os.path.exists(request.cookies_file):
-                meta_opts['cookiefile'] = request.cookies_file
+                meta_opts['cookiefile'] = request.cookies_file  # For private videos
 
-            # Extract metadata
+            # Extract video metadata (title, duration, etc.) without downloading
             with yt_dlp.YoutubeDL(meta_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 title = info.get("title", "video")
                 result.title = title
-                extension = "mp4"
+                extension = "mp4"  # Default to MP4 format
 
-                # Create formatted filename with platform prefix
+                # Create formatted filename: PLATFORM-formatted-title.ext
+                # Example: "YT-My-Video-Title.mp4"
                 filename = create_formatted_filename(url, title, extension, None)
                 result.filename = filename
 
-            # Create output template
+            # ----------------------------------------------------------------
+            # STEP 2: Check if file already exists (skip if present)
+            # ----------------------------------------------------------------
             if request.keep:
-                base_filename = filename.rsplit('.', 1)[0]
-                saved_filename = f"{base_filename}.%(ext)s"
+                # Permanent storage in downloads directory
+                base_filename = filename.rsplit('.', 1)[0]  # Remove extension
+                saved_filename = f"{base_filename}.%(ext)s"  # yt-dlp template
                 output_template = os.path.join(DOWNLOADS_DIR, saved_filename)
                 expected_file = os.path.join(DOWNLOADS_DIR, filename)
 
-                # Check if file already exists
+                # Check if file already exists on disk
                 if os.path.exists(expected_file):
+                    # File exists - skip download and mark as skipped
                     file_stat = os.stat(expected_file)
                     result.success = True
                     result.file_path = os.path.relpath(expected_file, start=".")
@@ -539,40 +787,52 @@ async def batch_download_videos(
                     total_size += file_stat.st_size
                     skipped += 1
                     results.append(result)
-                    continue
+                    continue  # Skip to next video
             else:
-                uid = uuid.uuid4().hex[:8]
+                # Temporary storage in /tmp directory (not kept)
+                uid = uuid.uuid4().hex[:8]  # Random 8-char ID
                 output_template = f"/tmp/{uid}.%(ext)s"
 
-            # Download options
+            # ----------------------------------------------------------------
+            # STEP 3: Download the video
+            # ----------------------------------------------------------------
+            # Configure yt-dlp download options
             ydl_opts = {
-                'format': request.format,
-                'outtmpl': output_template,
-                'quiet': True,
-                'merge_output_format': 'mp4',
+                'format': request.format,           # Quality selector (e.g., "best[height<=720]")
+                'outtmpl': output_template,         # Output path template
+                'quiet': True,                      # Suppress console output
+                'merge_output_format': 'mp4',       # Force MP4 output
             }
 
+            # Add cookies if provided (for authenticated downloads)
             if request.cookies_file and os.path.exists(request.cookies_file):
                 ydl_opts['cookiefile'] = request.cookies_file
 
-            # Download the video
+            # Execute download
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
-            # Find downloaded file
+            # ----------------------------------------------------------------
+            # STEP 4: Verify download and get file info
+            # ----------------------------------------------------------------
+            # Find the downloaded file (extension might vary)
             actual_file_path = None
             if request.keep:
+                # Search in downloads directory
                 for f in os.listdir(DOWNLOADS_DIR):
                     if f.startswith(base_filename):
                         actual_file_path = os.path.join(DOWNLOADS_DIR, f)
                         break
             else:
+                # Search in /tmp directory
                 for f in os.listdir("/tmp"):
                     if f.startswith(uid):
                         actual_file_path = os.path.join("/tmp", f)
                         break
 
+            # Check if file was actually created
             if actual_file_path and os.path.exists(actual_file_path):
+                # Success - get file stats and update result
                 file_stat = os.stat(actual_file_path)
                 result.success = True
                 result.file_path = os.path.relpath(actual_file_path, start=".") if request.keep else actual_file_path
@@ -580,16 +840,26 @@ async def batch_download_videos(
                 total_size += file_stat.st_size
                 successful += 1
             else:
+                # Download reported success but file not found
                 result.error = "Download completed but file not found"
                 failed += 1
 
         except Exception as e:
+            # ----------------------------------------------------------------
+            # ERROR HANDLING: Catch any errors and continue with next video
+            # ----------------------------------------------------------------
+            # One video failure doesn't stop the entire batch
             result.error = str(e)
             failed += 1
 
+        # Add result to list (whether success or failure)
         results.append(result)
 
-        # Add delay between downloads (except after last video)
+        # ----------------------------------------------------------------
+        # STEP 5: Rate limiting delay between downloads
+        # ----------------------------------------------------------------
+        # Add random delay between downloads (except after last video)
+        # This prevents platform rate limiting/IP bans
         if idx < len(request.urls):
             delay = random.randint(request.min_delay, request.max_delay)
             time.sleep(delay)
