@@ -1,5 +1,16 @@
 # Social Media Video Downloader - Development Notes
 
+
+## n8n Integration
+  Your n8n service can now access this API internally using:
+  http://[service-name].railway.internal:8000
+  Replace [service-name] with your Railway service name (check Railway dashboard).
+
+  Example n8n HTTP Request:
+  - URL: http://yt-dlp-v1.railway.internal:8000/download?url=VIDEO_URL
+  - Headers: X-API-Key: your-api-key
+  - Method: GET
+
 ## Server Commands
 
 ### Start Development Server

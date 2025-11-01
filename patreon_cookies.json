@@ -1,0 +1,74 @@
+[
+  {
+    "name": "__cf_bm",
+    "value": "tVz_sfqmA_Kdmx4_UeQhGnXv3BpXMaX1zE0.kFZ50OE-1756491868-1.0.1.1-DtZypzRHWuPP.KqFIH6F_qAkRtJJVXkAupQUk4gmawx8OCQyLdptP0ouhOjEqqfrV4MPyTXnoPS7qe2b3nSqS5cQB6n0p_4X13.wCpYuOXt1E8Rj.wwK2Odhv0FaX_ko",
+    "domain": ".patreon.com",
+    "path": "/",
+    "secure": 1,
+    "expires": 1756493667
+  },
+  {
+    "name": "__ssid",
+    "value": "f5567f4313caaf1367901c14371baef",
+    "domain": ".patreon.com",
+    "path": "/",
+    "secure": 0,
+    "expires": 1791051871
+  },
+  {
+    "name": "_cfuvid",
+    "value": "Nrsv3CNI_J_fVTj.hxTo006.TOIlcApKfKMAVN_PCUk-1756491868186-0.0.1.1-604800000",
+    "domain": ".patreon.com",
+    "path": "/",
+    "secure": 1,
+    "expires": null
+  },
+  {
+    "name": "analytics_session_id",
+    "value": "edfa7f3e-d8fa-4435-a12c-65a5c683347a",
+    "domain": ".patreon.com",
+    "path": "/",
+    "secure": 0,
+    "expires": 1756493683
+  },
+  {
+    "name": "g_state",
+    "value": "{\"i_p\":1756499071816,\"i_l\":1}",
+    "domain": "www.patreon.com",
+    "path": "/",
+    "secure": 0,
+    "expires": 1772043871
+  },
+  {
+    "name": "patreon_device_id",
+    "value": "92f2124e-bbd3-4652-a9e6-63c6b5fb17c5",
+    "domain": "www.patreon.com",
+    "path": "/",
+    "secure": 1,
+    "expires": 1791051867
+  },
+  {
+    "name": "patreon_locale_code",
+    "value": "en-US",
+    "domain": "www.patreon.com",
+    "path": "/",
+    "secure": 1,
+    "expires": 1791051879
+  },
+  {
+    "name": "patreon_location_country_code",
+    "value": "SA",
+    "domain": "www.patreon.com",
+    "path": "/",
+    "secure": 1,
+    "expires": 1791051879
+  },
+  {
+    "name": "session_id",
+    "value": "RcFchgSh4zBYfoMHhvQnCmvORdYLGpGjXfcSlnTg2ok",
+    "domain": "www.patreon.com",
+    "path": "/",
+    "secure": 1,
+    "expires": 1788027878
+  }
+]

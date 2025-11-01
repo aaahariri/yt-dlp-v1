@@ -422,7 +422,252 @@ if (arabicLocale) {
 
 ---
 
-## 5. List Downloads Endpoint
+## 5. Get Playlist Information Endpoint
+
+### `GET /playlist/info`
+
+**Description**: Extracts metadata from YouTube playlists or channel videos without downloading. Returns a list of video URLs that can be used with existing `/download` and `/transcription` endpoints. Supports filtering by upload date and selecting specific videos.
+
+**Authentication**: Required
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | Yes | - | YouTube playlist or channel URL |
+| `dateafter` | string | No | - | Filter videos uploaded after this date |
+| `datebefore` | string | No | - | Filter videos uploaded before this date |
+| `max_items` | integer | No | - | Maximum number of videos to return |
+| `items` | string | No | - | Select specific videos by index |
+
+### Date Filter Format
+
+Date parameters support two formats:
+
+1. **Absolute dates**: `YYYYMMDD` format
+   - Example: `20240101` (January 1, 2024)
+   - Example: `20231225` (December 25, 2023)
+
+2. **Relative dates**: Based on current date
+   - `today` - Current date
+   - `yesterday` - Yesterday's date
+   - `today-1week` or `now-7days` - 7 days ago
+   - `today-1month` - 1 month ago
+   - `today-1year` - 1 year ago
+   - Pattern: `[now|today|yesterday][-N[day|week|month|year]]`
+
+### Item Selection Format
+
+The `items` parameter allows precise video selection:
+- Range: `1:5` - Videos 1 through 5
+- Specific: `1,3,5,7` - Videos at indices 1, 3, 5, and 7
+- Mixed: `1:3,7,10:15` - Videos 1-3, 7, and 10-15
+- Reverse: `-5:` - Last 5 videos
+- Step: `1:10:2` - Every 2nd video from 1 to 10
+
+### Example Requests
+
+**Get all videos from a playlist**:
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/playlist/info?url=https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+```
+
+**Get videos uploaded in last week**:
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/playlist/info?url=PLAYLIST_URL&dateafter=today-1week"
+```
+
+**Get first 10 videos from 2024**:
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/playlist/info?url=PLAYLIST_URL&dateafter=20240101&max_items=10"
+```
+
+**Get specific videos by index**:
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/playlist/info?url=PLAYLIST_URL&items=1,5,10"
+```
+
+### Example Response
+
+```json
+{
+  "playlist_title": "Select Lectures",
+  "playlist_url": "https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf",
+  "channel": "Lex Fridman",
+  "channel_id": "@lexfridman",
+  "channel_url": "https://www.youtube.com/@lexfridman",
+  "video_count": 2,
+  "total_count": 25,
+  "videos": [
+    {
+      "url": "https://www.youtube.com/watch?v=0VH1Lim8gL8",
+      "title": "Deep Learning State of the Art (2020)",
+      "duration": "1:27:41",
+      "duration_seconds": 5261,
+      "upload_date": "2020-01-15",
+      "index": 1,
+      "id": "0VH1Lim8gL8",
+      "views": 1300000,
+      "description": "MIT Deep Learning Lecture on the state of the art in deep learning..."
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=O5xeyoRL95U",
+      "title": "Deep Learning Basics: Introduction and Overview",
+      "duration": "1:08:06",
+      "duration_seconds": 4086,
+      "upload_date": "2019-02-04",
+      "index": 2,
+      "id": "O5xeyoRL95U",
+      "views": 2400000
+    }
+  ],
+  "filters_applied": {
+    "dateafter": null,
+    "datebefore": null,
+    "max_items": null,
+    "items": null
+  }
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `playlist_title` | Name of the playlist or channel |
+| `playlist_url` | URL of the playlist |
+| `channel` | Channel/uploader name |
+| `channel_id` | Channel identifier |
+| `channel_url` | URL to the channel |
+| `video_count` | Number of videos returned (after filtering) |
+| `total_count` | Total videos in playlist (before filtering) |
+| `videos` | Array of video information |
+| `videos[].url` | Direct URL to the video |
+| `videos[].title` | Video title |
+| `videos[].duration` | Duration in HH:MM:SS or MM:SS format |
+| `videos[].duration_seconds` | Duration in seconds |
+| `videos[].upload_date` | Upload date (YYYY-MM-DD format) |
+| `videos[].index` | Position in the playlist |
+| `videos[].id` | Video ID |
+| `videos[].views` | View count (if available) |
+| `videos[].description` | Truncated description (first 200 chars) |
+| `filters_applied` | Shows which filters were used |
+
+### Single Video Handling
+
+If a single video URL is provided instead of a playlist, the endpoint will return it wrapped as a single-item playlist for consistency:
+
+```json
+{
+  "playlist_title": "Single Video",
+  "playlist_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "channel": "Rick Astley",
+  "video_count": 1,
+  "videos": [
+    {
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "title": "Never Gonna Give You Up",
+      "duration": "3:33",
+      "index": 1,
+      "id": "dQw4w9WgXcQ"
+    }
+  ]
+}
+```
+
+### Usage with Other Endpoints
+
+The video URLs returned can be used directly with other endpoints:
+
+**1. Download specific videos from playlist**:
+```bash
+# First, get playlist info
+PLAYLIST_INFO=$(curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/playlist/info?url=PLAYLIST_URL&max_items=5")
+
+# Extract first video URL (using jq)
+VIDEO_URL=$(echo $PLAYLIST_INFO | jq -r '.videos[0].url')
+
+# Download the video
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/download?url=$VIDEO_URL&format=best[height<=720]" \
+  --output video.mp4
+```
+
+**2. Transcribe all recent videos**:
+```javascript
+// Get recent videos (last week)
+const response = await fetch(
+  'http://localhost:8000/playlist/info?url=PLAYLIST_URL&dateafter=today-1week',
+  { headers: { 'X-Api-Key': apiKey } }
+);
+const playlist = await response.json();
+
+// Transcribe each video
+for (const video of playlist.videos) {
+  const transcriptResponse = await fetch(
+    `http://localhost:8000/transcription?url=${video.url}&format=text`,
+    { headers: { 'X-Api-Key': apiKey } }
+  );
+  const transcript = await transcriptResponse.json();
+  console.log(`${video.title}: ${transcript.word_count} words`);
+}
+```
+
+### Practical Use Cases
+
+1. **Monitor channels for new content**:
+   - Use `dateafter=today-1day` to check for videos uploaded in last 24 hours
+   - Automate transcription of new videos
+
+2. **Batch download playlists**:
+   - Get playlist info with desired filters
+   - Loop through video URLs to download each
+
+3. **Content analysis**:
+   - Extract metadata for multiple videos
+   - Analyze upload patterns, video lengths, view counts
+
+4. **Selective processing**:
+   - Use `items` parameter to process specific videos
+   - Filter by date range for historical content
+
+### Best Practices
+
+1. **Use filters to reduce response size**: Large playlists can return hundreds of videos
+2. **Cache playlist info**: Video metadata doesn't change frequently
+3. **Implement pagination**: Use `items` parameter for large playlists
+4. **Check `total_count` vs `video_count`**: Understand how many videos were filtered out
+5. **Handle unavailable videos**: Some videos may be private or deleted (returned as null entries)
+
+### Limitations
+
+- Only works with YouTube playlists and channels currently
+- Date filtering depends on YouTube providing upload dates
+- Some metadata may be unavailable for certain videos
+- Private or age-restricted videos may have limited information
+
+### Error Responses
+
+```json
+{
+  "detail": "Error extracting playlist info: Invalid playlist URL"
+}
+```
+
+```json
+{
+  "detail": "Error extracting playlist info: This playlist is private"
+}
+```
+
+---
+
+## 6. List Downloads Endpoint
 
 ### `GET /downloads/list`
 
