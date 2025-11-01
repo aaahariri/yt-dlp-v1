@@ -280,8 +280,21 @@ def get_platform_prefix(url: str) -> str:
     else:
         return 'VIDEO'
 
-def format_title_for_filename(title: str, max_length: int = 60) -> str:
+def format_title_for_filename(title: str, max_length: int = 50) -> str:
     """Format title for filename: truncate, replace spaces with hyphens, remove special chars."""
+    # Remove channel name suffix (everything after | or -)
+    # Common patterns: "Video Title | Channel Name" or "Video Title - Channel Name"
+    if '|' in title:
+        title = title.split('|')[0].strip()
+    elif ' - ' in title and len(title.split(' - ')[-1]) < 30:
+        # Only split on " - " if the last part looks like a channel name (short)
+        parts = title.split(' - ')
+        if len(parts) > 1:
+            # Check if last part might be a channel name (no common title words)
+            last_part = parts[-1].lower()
+            if not any(word in last_part for word in ['ep', 'part', 'tutorial', 'guide', 'how']):
+                title = ' - '.join(parts[:-1]).strip()
+
     # First sanitize to remove problematic characters
     title = sanitize_filename(title)
 
