@@ -258,6 +258,70 @@ def sanitize_filename(filename: str) -> str:
         filename = filename[:200]
     return filename or 'video'
 
+def get_platform_prefix(url: str) -> str:
+    """Extract platform prefix from URL."""
+    url_lower = url.lower()
+    if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+        return 'YT'
+    elif 'tiktok.com' in url_lower:
+        return 'TT'
+    elif 'instagram.com' in url_lower:
+        return 'IG'
+    elif 'facebook.com' in url_lower or 'fb.watch' in url_lower:
+        return 'FB'
+    elif 'twitter.com' in url_lower or 'x.com' in url_lower:
+        return 'X'
+    elif 'vimeo.com' in url_lower:
+        return 'VM'
+    elif 'dailymotion.com' in url_lower:
+        return 'DM'
+    elif 'twitch.tv' in url_lower:
+        return 'TW'
+    else:
+        return 'VIDEO'
+
+def format_title_for_filename(title: str, max_length: int = 60) -> str:
+    """Format title for filename: truncate, replace spaces with hyphens, remove special chars."""
+    # First sanitize to remove problematic characters
+    title = sanitize_filename(title)
+
+    # Replace multiple spaces with single space
+    title = re.sub(r'\s+', ' ', title)
+
+    # Replace spaces with hyphens
+    title = title.replace(' ', '-')
+
+    # Replace multiple consecutive hyphens with single hyphen
+    title = re.sub(r'-+', '-', title)
+
+    # Remove leading/trailing hyphens
+    title = title.strip('-')
+
+    # Truncate to max_length
+    if len(title) > max_length:
+        # Try to truncate at last hyphen before max_length
+        truncated = title[:max_length]
+        last_hyphen = truncated.rfind('-')
+        if last_hyphen > max_length // 2:  # Only use hyphen if it's past halfway point
+            title = truncated[:last_hyphen]
+        else:
+            title = truncated
+
+    return title or 'video'
+
+def create_formatted_filename(url: str, title: str, extension: str = 'mp4', custom_title: str = None) -> str:
+    """Create formatted filename with platform prefix and formatted title."""
+    if custom_title:
+        # Use custom title if provided
+        formatted_title = format_title_for_filename(custom_title)
+        platform_prefix = get_platform_prefix(url)
+        return f"{platform_prefix}-{formatted_title}.{extension}"
+    else:
+        # Use extracted title with platform prefix
+        formatted_title = format_title_for_filename(title)
+        platform_prefix = get_platform_prefix(url)
+        return f"{platform_prefix}-{formatted_title}.{extension}"
+
 def encode_content_disposition_filename(filename: str) -> str:
     """Encode filename for Content-Disposition header following RFC 5987."""
     # For ASCII filenames, use simple format
@@ -277,35 +341,36 @@ def encode_content_disposition_filename(filename: str) -> str:
 
 @app.get("/download")
 async def download_video(
-    url: str = Query(...), 
-    format: str = Query("best"), 
+    url: str = Query(...),
+    format: str = Query("best"),
     keep: bool = Query(False),
+    custom_title: str = Query(None, description="Optional custom title for the downloaded file"),
     cookies_file: str = Query(None, description="Optional path to cookies file for sites requiring authentication"),
     _: bool = Depends(verify_api_key)
 ):
     try:
         # Prepare yt-dlp options for metadata extraction
         meta_opts = {'quiet': True, 'skip_download': True}
-        
+
         # Add cookies file if provided (for sites like Patreon)
         if cookies_file and os.path.exists(cookies_file):
             meta_opts['cookiefile'] = cookies_file
-        
+
         # Extract metadata
         with yt_dlp.YoutubeDL(meta_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             title = info.get("title", "video")
-            title = sanitize_filename(title)
             extension = "mp4"  # fallback extension
-            filename = f"{title}.{extension}"
+
+            # Create formatted filename with platform prefix
+            filename = create_formatted_filename(url, title, extension, custom_title)
 
         # Create output template based on keep parameter
         if keep:
-            # Save to downloads directory with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # Keep Unicode characters but remove filesystem-unsafe chars
-            safe_title = sanitize_filename(title).replace(' ', '_')
-            saved_filename = f"{safe_title}_{timestamp}.%(ext)s"
+            # Save to downloads directory with formatted filename
+            # Extract just the name without extension for template
+            base_filename = filename.rsplit('.', 1)[0]
+            saved_filename = f"{base_filename}.%(ext)s"
             output_template = os.path.join(DOWNLOADS_DIR, saved_filename)
         else:
             # Use temporary file
@@ -330,9 +395,10 @@ async def download_video(
         # Find actual downloaded file
         actual_file_path = None
         if keep:
-            # Look in downloads directory
+            # Look in downloads directory for the formatted filename
+            base_filename = filename.rsplit('.', 1)[0]
             for f in os.listdir(DOWNLOADS_DIR):
-                if timestamp in f and safe_title in f:
+                if f.startswith(base_filename):
                     actual_file_path = os.path.join(DOWNLOADS_DIR, f)
                     break
         else:
