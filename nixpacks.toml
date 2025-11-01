@@ -1,0 +1,13 @@
+# Nixpacks configuration for Railway deployment
+# This ensures Deno is installed for yt-dlp YouTube support
+
+[phases.setup]
+nixPkgs = ["python312", "deno"]
+
+[phases.install]
+cmds = [
+    "pip install -r requirements.txt || pip install fastapi uvicorn yt-dlp python-multipart python-dotenv requests"
+]
+
+[start]
+cmd = "uvicorn main:app --host :: --port ${PORT:-8000}"
