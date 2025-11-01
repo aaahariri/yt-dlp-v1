@@ -8,9 +8,11 @@ import requests
 import unicodedata
 from urllib.parse import quote
 from datetime import datetime
-from fastapi import FastAPI, Query, HTTPException, Depends, Header
+from fastapi import FastAPI, Query, HTTPException, Depends, Header, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 import yt_dlp
 from dotenv import load_dotenv
 
@@ -445,6 +447,164 @@ async def download_video(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during download: {str(e)}")
+
+# Pydantic models for batch download
+class BatchDownloadRequest(BaseModel):
+    urls: List[str] = Field(..., description="List of video URLs to download", min_items=1)
+    format: str = Field("best[height<=720]", description="Video quality format")
+    keep: bool = Field(True, description="Save videos to server storage")
+    min_delay: int = Field(5, description="Minimum delay between downloads (seconds)", ge=0, le=300)
+    max_delay: int = Field(10, description="Maximum delay between downloads (seconds)", ge=0, le=300)
+    cookies_file: Optional[str] = Field(None, description="Path to cookies file")
+
+class VideoDownloadResult(BaseModel):
+    url: str
+    success: bool
+    filename: Optional[str] = None
+    file_path: Optional[str] = None
+    file_size: Optional[int] = None
+    platform: Optional[str] = None
+    title: Optional[str] = None
+    error: Optional[str] = None
+
+class BatchDownloadResponse(BaseModel):
+    total: int
+    successful: int
+    failed: int
+    skipped: int
+    downloads: List[VideoDownloadResult]
+    total_size: int
+    duration_seconds: float
+
+@app.post("/batch-download")
+async def batch_download_videos(
+    request: BatchDownloadRequest = Body(...),
+    _: bool = Depends(verify_api_key)
+) -> BatchDownloadResponse:
+    """
+    Download multiple videos from various platforms in batch.
+
+    Supports YouTube, TikTok, Instagram, Facebook, Twitter, and 1000+ platforms.
+    Downloads are processed sequentially with configurable delays to avoid rate limiting.
+    """
+    import random
+
+    start_time = time.time()
+    results: List[VideoDownloadResult] = []
+    successful = 0
+    failed = 0
+    skipped = 0
+    total_size = 0
+
+    # Ensure downloads directory exists
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+    for idx, url in enumerate(request.urls, 1):
+        result = VideoDownloadResult(url=url, success=False)
+
+        try:
+            # Detect platform
+            platform_prefix = get_platform_prefix(url)
+            result.platform = platform_prefix
+
+            # Prepare yt-dlp options for metadata extraction
+            meta_opts = {'quiet': True, 'skip_download': True}
+            if request.cookies_file and os.path.exists(request.cookies_file):
+                meta_opts['cookiefile'] = request.cookies_file
+
+            # Extract metadata
+            with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get("title", "video")
+                result.title = title
+                extension = "mp4"
+
+                # Create formatted filename with platform prefix
+                filename = create_formatted_filename(url, title, extension, None)
+                result.filename = filename
+
+            # Create output template
+            if request.keep:
+                base_filename = filename.rsplit('.', 1)[0]
+                saved_filename = f"{base_filename}.%(ext)s"
+                output_template = os.path.join(DOWNLOADS_DIR, saved_filename)
+                expected_file = os.path.join(DOWNLOADS_DIR, filename)
+
+                # Check if file already exists
+                if os.path.exists(expected_file):
+                    file_stat = os.stat(expected_file)
+                    result.success = True
+                    result.file_path = os.path.relpath(expected_file, start=".")
+                    result.file_size = file_stat.st_size
+                    total_size += file_stat.st_size
+                    skipped += 1
+                    results.append(result)
+                    continue
+            else:
+                uid = uuid.uuid4().hex[:8]
+                output_template = f"/tmp/{uid}.%(ext)s"
+
+            # Download options
+            ydl_opts = {
+                'format': request.format,
+                'outtmpl': output_template,
+                'quiet': True,
+                'merge_output_format': 'mp4',
+            }
+
+            if request.cookies_file and os.path.exists(request.cookies_file):
+                ydl_opts['cookiefile'] = request.cookies_file
+
+            # Download the video
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            # Find downloaded file
+            actual_file_path = None
+            if request.keep:
+                for f in os.listdir(DOWNLOADS_DIR):
+                    if f.startswith(base_filename):
+                        actual_file_path = os.path.join(DOWNLOADS_DIR, f)
+                        break
+            else:
+                for f in os.listdir("/tmp"):
+                    if f.startswith(uid):
+                        actual_file_path = os.path.join("/tmp", f)
+                        break
+
+            if actual_file_path and os.path.exists(actual_file_path):
+                file_stat = os.stat(actual_file_path)
+                result.success = True
+                result.file_path = os.path.relpath(actual_file_path, start=".") if request.keep else actual_file_path
+                result.file_size = file_stat.st_size
+                total_size += file_stat.st_size
+                successful += 1
+            else:
+                result.error = "Download completed but file not found"
+                failed += 1
+
+        except Exception as e:
+            result.error = str(e)
+            failed += 1
+
+        results.append(result)
+
+        # Add delay between downloads (except after last video)
+        if idx < len(request.urls):
+            delay = random.randint(request.min_delay, request.max_delay)
+            time.sleep(delay)
+
+    duration = time.time() - start_time
+
+    return BatchDownloadResponse(
+        total=len(request.urls),
+        successful=successful,
+        failed=failed,
+        skipped=skipped,
+        downloads=results,
+        total_size=total_size,
+        duration_seconds=round(duration, 2)
+    )
 
 @app.get("/transcription")
 async def get_transcription(

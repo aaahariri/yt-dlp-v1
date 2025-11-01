@@ -85,3 +85,31 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
   - Better user experience for batch downloading
 - Files: `docs/local-scripts.md`
 - Tags: #docs #scripts #batch-download #multi-platform
+
+2025-11-01 | [FEATURE] | [API] | Batch download API endpoint with multi-platform support
+→ Added POST /batch-download endpoint for downloading multiple videos dynamically with automatic platform detection
+→ **WHAT**:
+  - New POST /batch-download endpoint accepting JSON array of video URLs
+  - Pydantic models: BatchDownloadRequest, VideoDownloadResult, BatchDownloadResponse
+  - Automatic platform detection using existing get_platform_prefix() function
+  - Configurable delays (min_delay, max_delay) for rate limiting
+  - Mixed platform batch support (YouTube + TikTok + Instagram in one request)
+  - Comprehensive JSON response with success/failure breakdown per video
+  - Error handling for each video independently (one failure doesn't stop batch)
+  - Skip already downloaded files functionality
+  - Support for cookies_file parameter for authenticated downloads
+→ **WHY**:
+  - Enable dynamic batch downloading via API (vs hardcoded script)
+  - Support multiple platforms in single request
+  - Provide programmatic access for integrations
+  - Avoid rate limiting with built-in delays
+  - Give detailed feedback on each video's download status
+→ **IMPACT**:
+  - Format: POST /batch-download with JSON body containing urls array
+  - Returns: { total, successful, failed, skipped, downloads[], total_size, duration_seconds }
+  - Each download result includes: url, success, filename, file_path, file_size, platform, title, error
+  - Automatically applies platform prefixes (YT-, TT-, IG-, FB-, X-, etc.)
+  - Rate limiting prevents platform blocks/bans
+  - Can be integrated into other applications via REST API
+- Files: `main.py`, `docs/batch-download-api.md`, `test_batch_request.json`
+- Tags: #feature #api #batch-download #multi-platform #automation
