@@ -21,6 +21,12 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-11-02 | [FIX] | [DEPLOY] | Railway deployment pip command not found error
+- Fixed nixpacks.toml to use `python3 -m pip` instead of `pip` for Nixpacks compatibility
+- Resolves "pip: command not found" error during Railway build process with nixPkgs python312
+- Files: `nixpacks.toml`
+- Tags: #fix #deployment #railway #nixpacks
+
 2025-11-01 | [FEATURE] | [API] | Batch download API endpoint with multi-platform support
 - Added POST /batch-download endpoint for downloading multiple videos with automatic platform detection
 - Pydantic models for type-safe requests, configurable rate limiting, comprehensive error handling
