@@ -16,18 +16,40 @@ A lightweight FastAPI-based web API that allows you to download videos from vari
 
 ---
 
+## ⚡ Important: Upcoming Deno Requirement
+
+> **Note**: An upcoming yt-dlp release will require **Deno** (JavaScript runtime) for YouTube downloads. While not mandatory yet, we recommend installing Deno now to prepare.
+>
+> 📖 **[View Deno Setup Guide](docs/deno-setup.md)** for installation instructions.
+
+---
+
 ## 📦 Installation
 
 1. Clone the repository:
    ```bash
    git clone https://github.com/yasirali646/social-media-video-downloader.git
    cd social-media-video-downloader
+   ```
+
 2. Install Dependencies (Using uv)
     ```bash
     uv venv
     source .venv/bin/activate  # or .venv\Scripts\activate on Windows
     uv add fastapi uvicorn yt-dlp python-multipart python-dotenv
-3. Run the App
+    ```
+
+3. **(Recommended) Install Deno** for future YouTube support:
+    ```bash
+    # macOS/Linux
+    curl -fsSL https://deno.land/install.sh | sh
+
+    # Windows PowerShell
+    irm https://deno.land/install.ps1 | iex
+    ```
+    See [Deno Setup Guide](docs/deno-setup.md) for details.
+
+4. Run the App
     ```bash
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     ```
