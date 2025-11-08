@@ -6,6 +6,7 @@ import json
 import hashlib
 import requests
 import unicodedata
+import asyncio
 from urllib.parse import quote
 from datetime import datetime
 from fastapi import FastAPI, Query, HTTPException, Depends, Header, Body
@@ -45,6 +46,14 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 # Ensure transcriptions directory exists
 TRANSCRIPTIONS_DIR = os.getenv("TRANSCRIPTIONS_DIR", "./transcriptions")
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
+
+# Concurrency control for transcription endpoints
+# This prevents memory overload when multiple transcription requests arrive
+# Set via environment variable or use default based on common model sizes
+MAX_CONCURRENT_TRANSCRIPTIONS = int(os.getenv("MAX_CONCURRENT_TRANSCRIPTIONS", "2"))
+transcription_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRANSCRIPTIONS)
+
+print(f"INFO: Max concurrent transcriptions set to: {MAX_CONCURRENT_TRANSCRIPTIONS}")
 
 # Utility functions for subtitle parsing and cleanup
 def parse_vtt_to_text(vtt_content: str) -> str:
@@ -596,13 +605,13 @@ async def batch_download_videos(
         duration_seconds=round(duration, 2)
     )
 
-@app.get("/transcription")
-async def get_transcription(
-    url: str = Query(...),
-    lang: str = Query("en"),
-    format: str = Query("text"),  # text, json, srt, vtt, segments
-    auto: bool = Query(True),
-    cookies_file: str = Query(None, description="Optional path to cookies file for sites requiring authentication"),
+@app.get("/subtitles")
+async def get_subtitles(
+    url: str = Query(..., description="Video URL to extract subtitles from"),
+    lang: str = Query("en", description="Language code (e.g., 'en', 'es', 'fr')"),
+    format: str = Query("text", description="Output format: text, json, srt, vtt"),
+    auto: bool = Query(True, description="Include auto-generated captions"),
+    cookies_file: str = Query(None, description="Optional path to cookies file for authentication"),
     _: bool = Depends(verify_api_key)
 ):
     try:
@@ -648,13 +657,18 @@ async def get_transcription(
                         break
             
             if not available_subs:
-                return JSONResponse(
+                raise HTTPException(
                     status_code=404,
-                    content={
-                        "error": f"No subtitles found for language '{lang}'", 
+                    detail={
+                        "error": "No subtitles available",
+                        "message": f"No subtitles found for language '{lang}'. Use POST /extract-audio + POST /transcribe to generate AI transcription.",
                         "available_languages": all_available_langs,
                         "title": title,
-                        "duration": duration
+                        "duration": duration,
+                        "suggested_workflow": [
+                            "1. POST /extract-audio with url parameter",
+                            "2. POST /transcribe with returned audio_file path"
+                        ]
                     }
                 )
             
@@ -783,7 +797,515 @@ async def get_transcription(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error extracting transcription: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error extracting subtitles: {str(e)}")
+
+@app.post("/extract-audio")
+async def extract_audio(
+    url: str = Query(None, description="Video URL to extract audio from"),
+    local_file: str = Query(None, description="Path to local video file (alternative to url)"),
+    output_format: str = Query("mp3", description="Audio format: mp3, m4a, wav, etc."),
+    quality: str = Query("192", description="Audio quality/bitrate (e.g., '192', '320')"),
+    cookies_file: str = Query(None, description="Optional cookies file for authentication"),
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Extract audio from video (URL or local file).
+
+    Returns the path to the extracted audio file on the server.
+    Audio files are stored in /tmp/ and automatically cleaned up after 1 hour.
+
+    Use cases:
+    - Extract audio from URL: provide 'url' parameter
+    - Extract audio from downloaded video: provide 'local_file' parameter
+
+    Next step: Use returned audio_file path with POST /transcribe
+    """
+    try:
+        # Validate input
+        if not url and not local_file:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'url' or 'local_file' parameter must be provided"
+            )
+
+        if url and local_file:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'url' OR 'local_file', not both"
+            )
+
+        # Run cleanup
+        cleanup_old_transcriptions()
+
+        # Generate unique ID for audio file
+        audio_uid = uuid.uuid4().hex[:8]
+        audio_path = f"/tmp/{audio_uid}.{output_format}"
+
+        # Get source info
+        if local_file:
+            # Validate local file exists
+            if not os.path.exists(local_file):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Local file not found: {local_file}"
+                )
+
+            # For local files, use FFmpeg directly
+            import subprocess
+            source_type = "local_file"
+            title = os.path.basename(local_file)
+
+            try:
+                # Use FFmpeg to extract audio from local file
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-i', os.path.abspath(local_file),
+                    '-vn',  # No video
+                    '-acodec', 'libmp3lame' if output_format == 'mp3' else output_format,
+                    '-b:a', f'{quality}k',
+                    '-y',  # Overwrite output file
+                    audio_path
+                ]
+
+                result = subprocess.run(
+                    ffmpeg_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+
+                if result.returncode != 0:
+                    raise Exception(f"FFmpeg error: {result.stderr}")
+
+            except subprocess.TimeoutExpired:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Audio extraction timed out (>5 minutes)"
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to extract audio from local file: {str(e)}"
+                )
+        else:
+            # For URLs, use yt-dlp
+            source = url
+            source_type = "url"
+
+            # Get metadata
+            try:
+                meta_opts = {'quiet': True, 'skip_download': True}
+                if cookies_file and os.path.exists(cookies_file):
+                    meta_opts['cookiefile'] = cookies_file
+
+                with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    title = info.get("title", "Unknown")
+            except Exception:
+                title = "Unknown"
+
+            # Extract audio using yt-dlp
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': output_format,
+                    'preferredquality': quality,
+                }],
+                'outtmpl': audio_path.replace(f'.{output_format}', '.%(ext)s'),
+                'quiet': True,
+            }
+
+            if cookies_file and os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([source])
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to extract audio: {str(e)}"
+                )
+
+        # Find actual audio file
+        if local_file:
+            # For local files, FFmpeg creates file directly at audio_path
+            actual_audio_path = audio_path
+        else:
+            # For URLs, yt-dlp may change extension, so search for it
+            actual_audio_path = None
+            for f in os.listdir("/tmp"):
+                if f.startswith(audio_uid):
+                    actual_audio_path = os.path.join("/tmp", f)
+                    break
+
+        if not actual_audio_path or not os.path.exists(actual_audio_path):
+            raise HTTPException(
+                status_code=500,
+                detail="Audio extraction completed but file not found"
+            )
+
+        # Get file info
+        file_size = os.path.getsize(actual_audio_path)
+
+        return {
+            "audio_file": actual_audio_path,
+            "format": output_format,
+            "size": file_size,
+            "title": title,
+            "source_type": source_type,
+            "message": "Audio extracted successfully. Use this audio_file path with POST /transcribe",
+            "expires_in": "1 hour (automatic cleanup)"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error during audio extraction: {str(e)}"
+        )
+
+@app.post("/transcribe")
+async def transcribe_audio(
+    audio_file: str = Query(..., description="Path to audio file on server (from /extract-audio)"),
+    language: str = Query(None, description="Language code (auto-detect if not specified)"),
+    model_size: str = Query("medium", description="Model size: tiny, small, medium, large-v2, large-v3, turbo"),
+    provider: str = Query("local", description="Provider: local (whisperX) or openai"),
+    output_format: str = Query("json", description="Output format: json, srt, vtt, text"),
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Transcribe audio file using AI.
+
+    Providers:
+    - local: whisperX (70x real-time on GPU, 3-5x on CPU, $0 cost, word-level timestamps)
+    - openai: OpenAI Whisper API ($0.006/min, managed service)
+
+    Input: audio_file path (from /extract-audio endpoint)
+    Output: Transcription in specified format
+
+    Workflow:
+    1. POST /extract-audio → get audio_file path
+    2. POST /transcribe → get transcription
+
+    Note: This endpoint is limited to MAX_CONCURRENT_TRANSCRIPTIONS concurrent requests
+    to prevent memory overload. Additional requests will wait in queue.
+    """
+    # Acquire semaphore to limit concurrent transcriptions
+    async with transcription_semaphore:
+        return await _transcribe_audio_internal(
+            audio_file, language, model_size, provider, output_format
+        )
+
+
+async def _transcribe_audio_internal(
+    audio_file: str,
+    language: str,
+    model_size: str,
+    provider: str,
+    output_format: str
+):
+    """Internal transcription logic (separated for semaphore control)."""
+    try:
+        # Validate audio file exists
+        if not os.path.exists(audio_file):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Audio file not found: {audio_file}. Did you run /extract-audio first?"
+            )
+
+        # Validate provider
+        valid_providers = ["local", "openai"]
+        if provider not in valid_providers:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid provider '{provider}'. Must be one of: {', '.join(valid_providers)}"
+            )
+
+        # Get basic file info
+        title = os.path.basename(audio_file)
+        duration = 0  # We don't have duration without re-processing
+
+        # Transcribe based on provider
+        transcribe_start = time.time()
+        segments = []
+        detected_language = language or 'unknown'
+
+        if provider == "local":
+            # Local whisperX transcription
+            try:
+                import whisperx
+                import torch
+            except ImportError as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Local provider error: whisperX not installed - {str(e)}. Run: pip install whisperx OR use provider=openai"
+                )
+
+            # Determine device and compute type with fallback strategy
+            device = "cpu"
+            compute_type = "int8"
+            attempted_device = "cpu"
+
+            try:
+                if torch.cuda.is_available():
+                    device = "cuda"
+                    compute_type = "float16"
+                    attempted_device = "cuda"
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    device = "mps"
+                    compute_type = "float16"
+                    attempted_device = "mps"
+            except Exception:
+                pass
+
+            # Load model with automatic fallback to CPU if GPU fails
+            model_load_error = None
+            try:
+                model = whisperx.load_model(
+                    model_size,
+                    device,
+                    compute_type=compute_type,
+                    language=language
+                )
+            except Exception as e:
+                model_load_error = str(e)
+                # If GPU (CUDA or MPS) failed, try CPU fallback
+                if device in ["cuda", "mps"]:
+                    try:
+                        device = "cpu"
+                        compute_type = "int8"
+                        model = whisperx.load_model(
+                            model_size,
+                            device,
+                            compute_type=compute_type,
+                            language=language
+                        )
+                        # Successfully loaded on CPU after GPU failure
+                        print(f"Warning: {attempted_device.upper()} failed ({model_load_error}), fell back to CPU")
+                    except Exception as cpu_error:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Local provider error: Failed to load model '{model_size}' on {attempted_device.upper()} ({model_load_error}) and CPU ({str(cpu_error)})"
+                        )
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Local provider error: Failed to load model '{model_size}' on {device.upper()} - {str(e)}"
+                    )
+
+            # Load and transcribe audio
+            try:
+                audio = whisperx.load_audio(audio_file)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Local provider error: Failed to load audio - {str(e)}. Audio format may not be supported."
+                )
+
+            try:
+                result = model.transcribe(audio, batch_size=16)
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Local provider error: Out of memory. Try smaller model (tiny/small) or use provider=openai"
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Local provider error: Transcription failed - {str(e)}"
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Local provider error: {str(e)}"
+                )
+
+            if not result or 'segments' not in result:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Local provider error: Transcription returned no segments - audio may be silent or corrupted"
+                )
+
+            for segment in result.get('segments', []):
+                segments.append({
+                    'start': segment['start'],
+                    'end': segment['end'],
+                    'text': segment['text']
+                })
+            detected_language = result.get('language', language or 'unknown')
+
+        elif provider == "openai":
+            # OpenAI Whisper API
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if not openai_key:
+                raise HTTPException(
+                    status_code=500,
+                    detail="OpenAI provider error: OPENAI_API_KEY not configured in environment"
+                )
+
+            try:
+                with open(audio_file, 'rb') as f:
+                    response = requests.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {openai_key}"},
+                        files={"file": f},
+                        data={
+                            "model": "whisper-1",
+                            "response_format": "verbose_json",
+                            "language": language if language else None
+                        },
+                        timeout=300
+                    )
+            except requests.exceptions.Timeout:
+                raise HTTPException(
+                    status_code=504,
+                    detail="OpenAI provider error: Request timeout - API did not respond within 5 minutes"
+                )
+            except requests.exceptions.ConnectionError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"OpenAI provider error: Connection failed - {str(e)}"
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"OpenAI provider error: Request failed - {str(e)}"
+                )
+
+            if response.status_code != 200:
+                try:
+                    error_json = response.json()
+                    error_message = error_json.get('error', {}).get('message', response.text)
+                except:
+                    error_message = response.text
+
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OpenAI API error (HTTP {response.status_code}): {error_message}"
+                )
+
+            try:
+                result = response.json()
+            except ValueError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="OpenAI provider error: Invalid JSON response"
+                )
+
+            if 'segments' not in result:
+                raise HTTPException(
+                    status_code=500,
+                    detail="OpenAI provider error: Response missing segments - transcription incomplete"
+                )
+
+            for segment in result.get('segments', []):
+                segments.append({
+                    'start': segment['start'],
+                    'end': segment['end'],
+                    'text': segment['text']
+                })
+            detected_language = result.get('language', language or 'unknown')
+
+        transcribe_duration = time.time() - transcribe_start
+
+        # Format output
+        if output_format == "json":
+            full_text = ' '.join([s['text'].strip() for s in segments])
+            return {
+                "title": title,
+                "language": detected_language,
+                "model": model_size if provider == "local" else "whisper-1",
+                "provider": provider,
+                "segments": segments,
+                "full_text": full_text,
+                "word_count": len(full_text.split()),
+                "segment_count": len(segments),
+                "transcription_time": round(transcribe_duration, 2)
+            }
+
+        elif output_format == "srt":
+            # Convert to SRT format
+            srt_lines = []
+            for idx, segment in enumerate(segments, 1):
+                start = segment['start']
+                end = segment['end']
+                text = segment['text'].strip()
+
+                # Convert to SRT timestamp format
+                start_h = int(start // 3600)
+                start_m = int((start % 3600) // 60)
+                start_s = int(start % 60)
+                start_ms = int((start % 1) * 1000)
+
+                end_h = int(end // 3600)
+                end_m = int((end % 3600) // 60)
+                end_s = int(end % 60)
+                end_ms = int((end % 1) * 1000)
+
+                srt_lines.append(f"{idx}")
+                srt_lines.append(f"{start_h:02d}:{start_m:02d}:{start_s:02d},{start_ms:03d} --> {end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms:03d}")
+                srt_lines.append(text)
+                srt_lines.append("")
+
+            return {
+                "title": title,
+                "language": detected_language,
+                "format": "srt",
+                "content": '\n'.join(srt_lines),
+                "provider": provider
+            }
+
+        elif output_format == "vtt":
+            # Convert to VTT format
+            vtt_lines = ["WEBVTT", ""]
+            for segment in segments:
+                start = segment['start']
+                end = segment['end']
+                text = segment['text'].strip()
+
+                start_h = int(start // 3600)
+                start_m = int((start % 3600) // 60)
+                start_s = int(start % 60)
+                start_ms = int((start % 1) * 1000)
+
+                end_h = int(end // 3600)
+                end_m = int((end % 3600) // 60)
+                end_s = int(end % 60)
+                end_ms = int((end % 1) * 1000)
+
+                vtt_lines.append(f"{start_h:02d}:{start_m:02d}:{start_s:02d}.{start_ms:03d} --> {end_h:02d}:{end_m:02d}:{end_s:02d}.{end_ms:03d}")
+                vtt_lines.append(text)
+                vtt_lines.append("")
+
+            return {
+                "title": title,
+                "language": detected_language,
+                "format": "vtt",
+                "content": '\n'.join(vtt_lines),
+                "provider": provider
+            }
+
+        else:  # text
+            full_text = ' '.join([s['text'].strip() for s in segments])
+            return {
+                "transcript": full_text,
+                "word_count": len(full_text.split()),
+                "title": title,
+                "language": detected_language,
+                "provider": provider
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error during transcription: {str(e)}"
+        )
 
 @app.get("/transcription/locales")
 async def get_transcription_locales(
