@@ -2,7 +2,7 @@
 # This ensures Deno is installed for yt-dlp YouTube support
 
 [phases.setup]
-nixPkgs = ["python312", "deno"]
+nixPkgs = ["python312", "python312Packages.pip", "deno"]
 
 [phases.install]
 cmds = [
