@@ -10,9 +10,7 @@ cmds = [
     "/opt/venv/bin/pip install --upgrade pip",
     "/opt/venv/bin/pip install -r requirements.txt"
 ]
-
-[phases.install.paths]
-PATH = "/opt/venv/bin:$PATH"
+paths = ["/opt/venv/bin"]
 
 [start]
 cmd = "/opt/venv/bin/uvicorn main:app --host :: --port ${PORT:-8000}"
