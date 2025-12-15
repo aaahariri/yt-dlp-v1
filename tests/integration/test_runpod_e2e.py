@@ -327,18 +327,23 @@ class TestRunPodE2E:
 
             document_id = str(uuid.uuid4())
 
+            # Note: Schema has specific columns - check actual table structure
+            # Columns: id, canonical_url, tenant_id, ingestion_source, media_format,
+            #          source_document_id, content_hash, lang, title, content,
+            #          first_added_by, metadata, processing_status, processed_at,
+            #          processing_error, first_ingested_at, updated_at, thumbnail_media_id
             doc_data = {
                 "id": document_id,
-                "video_id": video['video_id'],
-                "url": video['url'],
                 "canonical_url": video['url'],
                 "title": video['title'],
-                "duration": video['duration'],
-                "platform": "youtube",
                 "media_format": "video",
                 "processing_status": "pending",
+                "lang": "en",
                 "metadata": {
                     "test": True,
+                    "video_id": video['video_id'],
+                    "duration": video['duration'],
+                    "platform": "youtube",
                     "search_term": config.youtube_search_term,
                     "created_by": "integration_test"
                 }
@@ -499,16 +504,18 @@ class TestRunPodE2E:
 
             doc_data = {
                 "id": document_id,
-                "video_id": "test_existing",
-                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
                 "canonical_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
                 "title": "Test - Already Completed",
-                "duration": 60,
-                "platform": "youtube",
                 "media_format": "video",
                 "processing_status": "completed",  # Already completed!
                 "processed_at": datetime.now(timezone.utc).isoformat(),
-                "metadata": {"test": True}
+                "lang": "en",
+                "metadata": {
+                    "test": True,
+                    "video_id": "dQw4w9WgXcQ",
+                    "duration": 60,
+                    "platform": "youtube"
+                }
             }
 
             supabase.insert_document(doc_data)

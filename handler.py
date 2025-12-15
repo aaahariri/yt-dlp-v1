@@ -55,9 +55,9 @@ def get_job_logger(job_id: str):
 # =============================================================================
 # RunPod Handler
 # =============================================================================
-def handler(job: Dict[str, Any]) -> Dict[str, Any]:
+async def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    RunPod handler - receives job, delegates to FastAPI services.
+    RunPod async handler - receives job, delegates to FastAPI services.
 
     Input format (from Supabase via RunPod):
     {
@@ -74,6 +74,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
     Raises:
         Never - all exceptions are caught and returned as error responses
+
+    Note:
+        This is an async handler because process_job_batch is async and
+        RunPod natively supports async handlers.
     """
     # Get RunPod job ID for logging
     runpod_job_id = job.get("id", "unknown")
@@ -113,19 +117,17 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "summary": {"total": len(jobs), "completed": 0, "retry": 0, "archived": 0, "deleted": 0}
         }
 
-    # Process jobs using asyncio.run() for proper event loop management
+    # Process jobs (already in async context since handler is async)
     logger.info("-" * 40)
     logger.info("STARTING JOB PROCESSING")
     logger.info("-" * 40)
 
     try:
-        result = asyncio.run(
-            process_job_batch(
-                payload=job_input,
-                max_retries=settings.worker_max_retries,
-                model_size=settings.worker_model_size,
-                provider=settings.worker_provider
-            )
+        result = await process_job_batch(
+            payload=job_input,
+            max_retries=settings.worker_max_retries,
+            model_size=settings.worker_model_size,
+            provider=settings.worker_provider
         )
 
         # Log summary
