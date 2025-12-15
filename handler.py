@@ -53,11 +53,38 @@ def get_job_logger(job_id: str):
 
 
 # =============================================================================
+# Async Helper
+# =============================================================================
+def run_async(coro):
+    """
+    Run an async coroutine safely, handling existing event loops.
+
+    RunPod's async handler support has known issues (GitHub #387), so we use
+    a sync handler and manage the event loop ourselves.
+    """
+    try:
+        # Try to get existing loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're in an async context - create new loop in thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result()
+        else:
+            # No running loop - use it directly
+            return loop.run_until_complete(coro)
+    except RuntimeError:
+        # No event loop exists - create one
+        return asyncio.run(coro)
+
+
+# =============================================================================
 # RunPod Handler
 # =============================================================================
-async def handler(job: Dict[str, Any]) -> Dict[str, Any]:
+def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    RunPod async handler - receives job, delegates to FastAPI services.
+    RunPod sync handler - receives job, delegates to FastAPI services.
 
     Input format (from Supabase via RunPod):
     {
@@ -76,8 +103,8 @@ async def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         Never - all exceptions are caught and returned as error responses
 
     Note:
-        This is an async handler because process_job_batch is async and
-        RunPod natively supports async handlers.
+        Uses sync handler with manual event loop management because RunPod's
+        async handler support has known issues (coroutines not awaited).
     """
     # Get RunPod job ID for logging
     runpod_job_id = job.get("id", "unknown")
@@ -117,17 +144,19 @@ async def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "summary": {"total": len(jobs), "completed": 0, "retry": 0, "archived": 0, "deleted": 0}
         }
 
-    # Process jobs (already in async context since handler is async)
+    # Process jobs using run_async helper for safe event loop handling
     logger.info("-" * 40)
     logger.info("STARTING JOB PROCESSING")
     logger.info("-" * 40)
 
     try:
-        result = await process_job_batch(
-            payload=job_input,
-            max_retries=settings.worker_max_retries,
-            model_size=settings.worker_model_size,
-            provider=settings.worker_provider
+        result = run_async(
+            process_job_batch(
+                payload=job_input,
+                max_retries=settings.worker_max_retries,
+                model_size=settings.worker_model_size,
+                provider=settings.worker_provider
+            )
         )
 
         # Log summary
