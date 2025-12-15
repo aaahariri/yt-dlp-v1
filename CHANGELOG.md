@@ -21,6 +21,18 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-16 | [FEATURE] | [RUNPOD] | RunPod serverless handler for async transcription processing
+- Added handler.py: Thin orchestration layer (~85 lines) that receives RunPod jobs
+- Handler delegates to existing job_service.py process_job_batch() - zero code duplication
+- Proper async handling with asyncio.run() and comprehensive error handling
+- Updated Dockerfile CMD to run handler.py instead of uvicorn for serverless mode
+- Added runpod>=1.6.0 to requirements.txt
+- Architecture: Supabase Edge Function → RunPod /run → handler.py → job_service.py → Supabase DB
+- Results saved directly to Supabase (no need to poll RunPod for results)
+- Edge Function returns immediately (200 OK with runpod_job_id) - no timeout issues
+- Files: `handler.py`, `Dockerfile`, `requirements.txt`, `docs/runpod-deployment.md`, `docs/supabase-edge-function-runpod.md`
+- Tags: #feature #runpod #serverless #async #transcription
+
 2025-12-15 | [FIX] | [JOBS] | Fixed job_service.py upsert to match document_transcriptions schema
 - Removed non-existent columns from upsert: `full_text`, `word_count`, `segment_count`, `model`
 - Updated metadata format: `model` → `"WhisperX-{size}"`, `provider` → from `PROVIDER_NAME` env var

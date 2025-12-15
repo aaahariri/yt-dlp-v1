@@ -2309,3 +2309,200 @@ curl -H "Authorization: Bearer <PY_API_TOKEN>" \
     "max_concurrent_transcriptions": 2
   }
 }
+```
+
+---
+
+## 13. RunPod Serverless Endpoint
+
+### Overview
+
+When deployed to RunPod Serverless, jobs are submitted via RunPod's API instead of direct HTTP calls to your server. The `handler.py` receives jobs and delegates to the existing `job_service.py` logic.
+
+### Architecture Flow
+
+```
+Supabase Edge Function
+        │
+        ▼ POST https://api.runpod.ai/v2/{endpoint_id}/run
+        │
+        ▼ Returns immediately: {"id": "job-123", "status": "IN_QUEUE"}
+        │
+┌───────┴───────────────────────────────────────────────┐
+│                    RunPod Worker                       │
+│                                                        │
+│  handler.py → job_service.py → Supabase DB            │
+│  (orchestration)  (existing logic)  (results saved)   │
+└────────────────────────────────────────────────────────┘
+```
+
+### `POST https://api.runpod.ai/v2/{endpoint_id}/run`
+
+**Description**: Submit async job to RunPod serverless. Returns immediately with job ID.
+
+**Authentication**: RunPod API Key via `Authorization: Bearer` header
+
+### Request Body
+
+```json
+{
+  "input": {
+    "queue": "video_audio_transcription",
+    "vt_seconds": 1800,
+    "jobs": [
+      {
+        "msg_id": 1,
+        "read_ct": 1,
+        "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca"
+      }
+    ]
+  }
+}
+```
+
+### Response (Immediate)
+
+```json
+{
+  "id": "abc123-def456-ghi789",
+  "status": "IN_QUEUE"
+}
+```
+
+### Example Request
+
+```bash
+curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/run" \
+  -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "queue": "video_audio_transcription",
+      "jobs": [
+        {"msg_id": 1, "read_ct": 1, "document_id": "uuid-here"}
+      ]
+    }
+  }'
+```
+
+### `POST https://api.runpod.ai/v2/{endpoint_id}/runsync`
+
+**Description**: Submit synchronous job. Waits for completion and returns full result.
+
+**Use Case**: Testing, debugging, or when you need immediate results.
+
+### Response (After Processing)
+
+```json
+{
+  "id": "abc123-def456-ghi789",
+  "status": "COMPLETED",
+  "output": {
+    "ok": true,
+    "summary": {
+      "total": 1,
+      "completed": 1,
+      "retry": 0,
+      "archived": 0,
+      "deleted": 0
+    },
+    "results": [
+      {
+        "msg_id": 1,
+        "status": "completed",
+        "document_id": "uuid-here",
+        "word_count": 1234,
+        "segment_count": 45
+      }
+    ]
+  }
+}
+```
+
+### `GET https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}`
+
+**Description**: Check status of a submitted async job.
+
+### Response
+
+```json
+{
+  "id": "abc123-def456-ghi789",
+  "status": "COMPLETED",
+  "output": {...}
+}
+```
+
+### Job Status Values
+
+| Status | Description |
+|--------|-------------|
+| `IN_QUEUE` | Job received, waiting for worker |
+| `IN_PROGRESS` | Worker processing the job |
+| `COMPLETED` | Job finished successfully |
+| `FAILED` | Job failed (check output for error) |
+
+### Error Response Format
+
+When handler encounters an error:
+
+```json
+{
+  "ok": false,
+  "error": "Handler processing error: ...",
+  "summary": {
+    "total": 1,
+    "completed": 0,
+    "retry": 0,
+    "archived": 0,
+    "deleted": 0,
+    "failed": 1
+  },
+  "results": []
+}
+```
+
+### Environment Variables (RunPod)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | Yes | Supabase service role key |
+| `WORKER_MODEL_SIZE` | No | WhisperX model (default: `medium`) |
+| `WORKER_PROVIDER` | No | Transcription provider (default: `local`) |
+| `WORKER_MAX_RETRIES` | No | Max retry attempts (default: `5`) |
+| `MAX_CONCURRENT_TRANSCRIPTIONS` | No | Parallel limit (default: `2`) |
+
+### Why Use RunPod Serverless?
+
+| Benefit | Description |
+|---------|-------------|
+| **No Timeouts** | Edge Functions return immediately |
+| **GPU Acceleration** | whisperX runs 70x faster on GPU |
+| **Pay Per Use** | Only pay when processing jobs |
+| **Auto Scaling** | Handles burst traffic automatically |
+| **Results in DB** | No need to poll - check Supabase directly |
+
+### Supabase Edge Function Integration
+
+See [supabase-edge-function-runpod.md](supabase-edge-function-runpod.md) for complete Edge Function code to call RunPod.
+
+### Testing Locally
+
+```bash
+# Start handler in local mode
+pip install runpod
+python handler.py --rp_serve_api --rp_api_host 0.0.0.0
+
+# Test with curl
+curl -X POST http://localhost:8000/runsync \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"jobs": [{"msg_id": 1, "document_id": "test-uuid"}]}}'
+```
+
+---
+
+## Related Documentation
+
+- **[runpod-deployment.md](runpod-deployment.md)**: Full deployment guide
+- **[supabase-edge-function-runpod.md](supabase-edge-function-runpod.md)**: Edge Function code

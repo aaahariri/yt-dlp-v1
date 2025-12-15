@@ -106,6 +106,23 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 ---
 
+## RunPod Serverless (GPU Processing)
+
+| Endpoint | Method | Description | Implementation | Documentation |
+|----------|--------|-------------|----------------|---------------|
+| RunPod `/run` | POST | Async job submission to RunPod serverless | `handler.py` | [Usage](endpoints-usage.md#13-runpod-serverless-endpoint), [Deployment](runpod-deployment.md) |
+| RunPod `/runsync` | POST | Synchronous job execution (waits for result) | `handler.py` | [Usage](endpoints-usage.md#13-runpod-serverless-endpoint) |
+| RunPod `/status/{job_id}` | GET | Check status of submitted job | RunPod API | [Usage](endpoints-usage.md#13-runpod-serverless-endpoint) |
+
+**Notes**:
+- **handler.py** is a thin orchestration layer that delegates to existing `job_service.py`
+- Receives jobs via RunPod's serverless infrastructure, not direct HTTP calls
+- Supabase Edge Function calls RunPod `/run` which returns immediately
+- Results are saved directly to Supabase database (no polling needed)
+- See [RunPod Deployment Guide](runpod-deployment.md) for setup instructions
+
+---
+
 ## Supabase Integration (Optional)
 
 | Endpoint | Method | Description | Implementation | Documentation |
@@ -287,5 +304,5 @@ app/
 
 ---
 
-**Last Updated**: 2025-12-15
+**Last Updated**: 2025-12-16
 **Maintainer**: Update this file when adding/modifying endpoints
