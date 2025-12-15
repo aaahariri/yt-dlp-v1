@@ -21,6 +21,91 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-15 | [FEATURE] | [WORKER] | Background transcription worker with PGMQ queue processing
+- Added scripts/transcription_worker.py for automatic transcription of video/audio documents
+- Polls Supabase PGMQ queue (video_audio_transcription) for pending jobs on server startup
+- Parallel job processing with asyncio, respecting MAX_CONCURRENT_TRANSCRIPTIONS semaphore
+- Job flow: dequeue → validate → claim document → extract audio → transcribe → save → ack
+- Automatic retry with visibility timeout (VT_SECONDS), max retries before error state
+- Progressive idle backoff to reduce database load when queue is empty
+- Graceful shutdown with timeout for in-flight jobs
+- GET /admin/transcription-worker/status endpoint for monitoring
+- Configuration via environment variables: TRANSCRIPTION_WORKER_ENABLED, WORKER_POLL_INTERVAL, etc.
+- Requires Supabase queue setup (dequeue_video_audio_transcription, pgmq_delete_one, pgmq_archive_one RPCs)
+- Files: `scripts/transcription_worker.py`, `main.py:313-349,2427-2449`, `example.env`
+- Tags: #feature #worker #transcription #pgmq #supabase #asyncio
+
+2025-12-14 | [FEATURE] | [YOUTUBE] | Automated cookie refresh with Playwright
+- Added scripts/refresh_youtube_cookies.py for automated YouTube login and cookie export
+- Interactive mode (--interactive) for 2FA accounts, headless mode for automation
+- Exports cookies in Netscape format compatible with yt-dlp
+- Supports scheduled cron refresh for production deployments
+- Navigates to robots.txt before export to prevent cookie rotation
+- Environment: YOUTUBE_EMAIL, YOUTUBE_PASSWORD for credentials
+- Requires: pip install playwright && playwright install chromium
+- Files: `scripts/refresh_youtube_cookies.py`, `docs/Youtube-Cookies-Export.md`, `example.env`
+- Tags: #feature #youtube #playwright #cookies #automation
+
+2025-12-14 | [FIX] | [YOUTUBE] | Standalone yt-dlp binary with Deno for YouTube downloads
+- Added standalone yt-dlp binary (2025.12.08) requiring Deno runtime for YouTube
+- Automatic rate limiting with random delays (7-25s) to avoid YouTube bans
+- Added is_youtube_url() and run_ytdlp_binary() helper functions
+- YouTube-specific binary used for /screenshot/video and /extract-audio endpoints
+- Non-YouTube platforms continue using Python yt-dlp library
+- Cookie authentication support via YTDLP_COOKIES_FILE environment variable
+- Environment: YTDLP_BINARY, YTDLP_MIN_SLEEP, YTDLP_MAX_SLEEP, YTDLP_SLEEP_REQUESTS
+- Requires Deno 2.0.0+ installed: https://deno.com/
+- Files: `main.py`, `example.env`, `bin/yt-dlp`
+- Tags: #fix #youtube #deno #rate-limiting
+
+2025-12-14 | [FEATURE] | [CACHE] | Unified cache system and screenshot extraction endpoint
+- Added POST /screenshot/video endpoint for extracting frames at specified timestamps
+- Added GET /cache and DELETE /cache/cleanup endpoints for cache management
+- Unified cache system: ./cache/{videos,audio,transcriptions,screenshots}/ with TTL-based cleanup
+- Video caching for reuse across screenshot requests (skip re-download)
+- Optional Supabase upload for screenshots to public_media bucket
+- Updated /extract-audio to use unified cache path (./cache/audio/)
+- Files: `main.py`, `example.env`, `docs/endpoints-index.md`, `docs/endpoints-usage.md`
+- Tags: #feature #cache #screenshots #supabase
+
+2025-12-14 | [FEATURE] | [PERF] | GPU detection on server startup with model information
+- Added automatic GPU detection at server startup (runs once, not per request)
+- Detects NVIDIA CUDA GPUs with model name (e.g., "NVIDIA RTX 4090")
+- Detects Apple Silicon (M1/M2/M3) with chip model using system info
+- NOTE: Apple Silicon MPS support in whisperX is unstable (crashes with tensor broadcast errors)
+- Automatic CPU fallback when MPS fails - confirmed working on M1/M2/M3 Macs
+- Falls back to CPU if no GPU available with clear informative messages
+- Global variables: WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, WHISPER_GPU_INFO
+- Startup messages show detected hardware and compute configuration
+- Eliminates per-request device detection overhead
+- Files: `main.py:64-114,1453-1490`
+- Tags: #feature #performance #gpu #device-detection #whisperx #apple-silicon
+
+2025-11-08 | [FEATURE] | [SUPABASE] | Supabase integration for persistent transcription storage
+- Added optional Supabase integration to store transcriptions in `document_transcriptions` table
+- POST /transcriptions/save: UPSERT transcription data (requires existing document_id)
+- GET /transcriptions/check/{document_id}: Check if transcription exists for a document
+- Normalized schema: `documents` table (video metadata) + `document_transcriptions` table (segments, language, source)
+- Server-to-server authentication via SUPABASE_SERVICE_KEY (bypasses RLS)
+- Auto-updating timestamps via PostgreSQL trigger
+- Supports foreign key constraints with CASCADE delete
+- New dependencies: supabase-py (2.24.0)
+- Environment variables: SUPABASE_URL, SUPABASE_SERVICE_KEY (optional)
+- Documentation: docs/supabase-integration.md with complete setup, schema, and workflows
+- Files: `main.py:19,60-84,631-645,1776-1892`, `.env`, `example.env`, `CLAUDE.md`, `docs/supabase-integration.md`
+- Tags: #feature #supabase #database #storage #transcription
+
+2025-11-08 | [BREAKING] | [API] | Unified transcription response format for database storage
+- Standardized JSON response structure for /subtitles and /transcribe endpoints
+- Timestamps return as float (seconds): 0.24 instead of "00:00:00,240"
+- New fields: source, video_id, url, metadata (created_at, platform, transcription_time)
+- video_id extracted via yt-dlp info.get('id') for all platforms, MD5 hash fallback for local files
+- Enhanced /extract-audio to return metadata (video_id, url, duration, platform)
+- /transcribe accepts optional metadata parameters from /extract-audio
+- Utility functions: convert_srt_timestamp_to_seconds(), get_platform_from_url(), create_unified_transcription_response()
+- Files: `main.py:255-371,837-897,1070-1110,1120-1389`, `CLAUDE.md`
+- Tags: #breaking-change #api #database #transcription
+
 2025-11-02 | [FEATURE] | [CONCURRENCY] | Transcription concurrency limits to prevent memory overload
 - Added MAX_CONCURRENT_TRANSCRIPTIONS environment variable (default: 2) to limit parallel transcriptions (main.py:50-56)
 - Implemented asyncio.Semaphore pattern to queue excess requests instead of crashing (main.py:970-1011)
@@ -73,10 +158,8 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 - Files: `main.py:599-1217`, `docs/endpoint-flows.md`, `docs/clean-api-architecture.md`
 - Tags: #refactor #architecture #single-responsibility #clean-code
 
-2025-11-02 | [FEATURE] | [API] | Download and transcribe workflow with comprehensive error handling
-- Added POST /download-and-transcribe endpoint for download + transcribe in one workflow
-- Download video to server, transcribe with subtitles or AI, optionally keep or delete files
-- Enables retry capability without re-downloading (keep_video=true)
+2025-11-02 | [REFACTOR] | [API] | Improved transcription workflow and error handling
+- Refactored to composable endpoints: /extract-audio and /transcribe
 - Improved error handling across all transcription endpoints with detailed error messages
 - OpenAI errors: Timeout (504), connection failures (503), API errors with HTTP status codes
 - Local whisperX errors: Import errors, model loading, audio format issues, OOM detection
@@ -96,12 +179,12 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 - Tags: #refactor #ai #transcription #whisperx #performance
 
 2025-11-02 | [FEATURE] | [API] | AI-powered video transcription with local and cloud support
-- Added POST /ai-transcribe endpoint with mlx-whisper (M1-optimized) and OpenAI providers
-- Added POST /smart-transcribe hybrid endpoint (tries subtitles first, falls back to AI)
-- Support for 99 languages with automatic detection using OpenAI Whisper (open source)
+- Added POST /extract-audio endpoint to extract audio from video URLs or local files
+- Added POST /transcribe endpoint with whisperX (local) and OpenAI providers
+- Support for 99 languages with automatic detection using OpenAI Whisper
 - Multiple output formats: JSON with timestamps, SRT, VTT, plain text
-- Local transcription: $0 cost on M1/M2/M3 Macs using mlx-whisper (3-8x real-time speed)
-- Cloud transcription: OpenAI Whisper API ($0.36/hr) for Railway/non-M1 deployment
+- Local transcription: $0 cost using whisperX (70x real-time on GPU, 3-5x on CPU)
+- Cloud transcription: OpenAI Whisper API ($0.006/min) for managed service option
 - Files: `main.py`, `requirements.txt`, `pyproject.toml`, `CLAUDE.md`, `docs/transcription-services.md`, `docs/transcription-setup-guide.md`
 - Tags: #feature #api #ai #transcription #whisper
 

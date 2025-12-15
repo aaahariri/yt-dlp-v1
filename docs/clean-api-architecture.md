@@ -279,16 +279,10 @@ All endpoints return detailed error messages:
 
 ---
 
-## Comparison: Old vs New
+## Current Architecture (Single Responsibility)
 
-### Old Architecture (Overlapping Responsibilities)
-```
-/transcription  →  Get subtitles (one job) ✅
-/ai-transcribe  →  Download + Extract + Transcribe (three jobs) ❌
-/smart-transcribe → Try subtitles + Download + Extract + Transcribe (four jobs) ❌
-```
+Each endpoint does exactly one thing:
 
-### New Architecture (Single Responsibility)
 ```
 /subtitles      →  Get subtitles (one job) ✅
 /extract-audio  →  Extract audio (one job) ✅

@@ -1,473 +1,470 @@
-# API Endpoint Flow Diagrams
+# API Usage Scenarios & Workflows
 
-Visual flow diagrams and step-by-step logic for each API endpoint.
+Visual flowcharts showing common usage patterns and workflows for the Social Media Video Downloader API.
 
 ## Table of Contents
-- [Download and Transcribe (All-in-One)](#download-and-transcribe-all-in-one) ⭐ NEW
-- [Smart Transcribe (Hybrid)](#smart-transcribe-hybrid)
-- [AI Transcribe](#ai-transcribe)
-- [Subtitle Extraction](#subtitle-extraction)
-- [Download Video](#download-video)
+
+**Quick Start Scenarios**
+- [1. Extract Existing Subtitles](#1-extract-existing-subtitles)
+- [2. AI Transcription Workflow](#2-ai-transcription-workflow)
+- [3. Transcribe and Save to Supabase](#3-transcribe-and-save-to-supabase)
+- [4. Smart Transcription (Subtitles First, AI Fallback)](#4-smart-transcription-subtitles-first-ai-fallback)
+
+**Download Scenarios**
+- [5. Download Single Video](#5-download-single-video)
+- [6. Batch Download Multiple Videos](#6-batch-download-multiple-videos)
+
+**Playlist & Advanced Scenarios**
+- [7. Process YouTube Playlist](#7-process-youtube-playlist)
+- [8. Check Available Languages Before Transcribing](#8-check-available-languages-before-transcribing)
 
 ---
 
-## Download and Transcribe (All-in-One)
+## 1. Extract Existing Subtitles
 
-**Endpoint:** `POST /download-and-transcribe`
-**Location:** `main.py:1170-1600`
-**Purpose:** Download video to server, transcribe it, optionally keep or delete files
-
-### Flow Diagram
+**Use Case:** Quickly get transcription from a YouTube video that has existing subtitles (free & instant).
 
 ```mermaid
 flowchart TD
-    A[User Request] --> B[Download video to /downloads]
-    B --> C{Video downloaded?}
+    Start[User has Video URL] --> CallSubtitles[GET /subtitles]
+    CallSubtitles --> CheckFormat{Output Format?}
+    CheckFormat -->|json| ReturnJSON[Return JSON with segments]
+    CheckFormat -->|text| ReturnText[Return plain text]
+    CheckFormat -->|srt| ReturnSRT[Return SRT file]
+    CheckFormat -->|vtt| ReturnVTT[Return VTT file]
 
-    C -->|No| ERROR1[Return 500 error]
-    C -->|Yes| D{force_ai=true?}
+    ReturnJSON --> Done[Done]
+    ReturnText --> Done
+    ReturnSRT --> Done
+    ReturnVTT --> Done
 
-    D -->|No| E[Try subtitle extraction]
-    D -->|Yes| I[Skip to audio extraction]
-
-    E --> F{Subtitles found?}
-    F -->|Yes| G[Parse subtitles]
-    F -->|No| I
-
-    I --> J[Extract audio from downloaded video]
-    J --> K[Transcribe with whisperX/OpenAI]
-    K --> L[Format output]
-
-    G --> M{keep_video=true?}
-    L --> M
-
-    M -->|Yes| N[Keep video in /downloads]
-    M -->|No| O[Delete video file]
-
-    N --> P[Delete audio file]
-    O --> P
-    P --> Q[Return transcription + video info]
-
-    style Q fill:#90EE90
-    style ERROR1 fill:#FF6B6B
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
 ```
 
-### Step-by-Step Logic
+**Steps:**
+1. Call `GET /subtitles?url=VIDEO_URL&format=json&lang=en`
+2. API fetches video metadata and checks for subtitle availability
+3. Downloads subtitle file in requested language
+4. Parses and returns in requested format (json/text/srt/vtt)
+5. Receive instant transcription (< 1 second)
 
-1. **Download video to server** (`main.py:1210-1259`)
-   - Download to `/downloads/` directory (always persistent during process)
-   - Get video metadata (title, duration)
-   - Store actual file path and size
-   - **Benefit:** File available for retries without re-downloading
+**Cost:** $0 | **Speed:** < 1s
 
-2. **Try subtitle extraction first** (`main.py:1261-1375`) - if `force_ai=False`
-   - Same logic as `/smart-transcribe`
-   - Check for manual/auto-generated subtitles
-   - If found → Parse and prepare result
-   - If not found → Continue to Step 3
+---
 
-3. **Extract audio from downloaded video** (`main.py:1377-1411`) - if needed
-   - Use yt-dlp + FFmpeg to extract audio from LOCAL video file
-   - Process `file:///path/to/video.mp4` instead of streaming URL
-   - Convert to MP3 in `/tmp/`
-   - **Key difference from /ai-transcribe:** Uses already-downloaded video
+## 2. AI Transcription Workflow
 
-4. **AI transcription** (`main.py:1413-1562`)
-   - Local (whisperX) or OpenAI provider
-   - Same error handling as `/ai-transcribe`
-   - Comprehensive error messages for troubleshooting
+**Use Case:** Transcribe video that has no existing subtitles using AI (whisperX or OpenAI).
 
-5. **Cleanup based on keep_video parameter** (`main.py:1564-1571`)
-   - **If `keep_video=True`:** Keep video in `/downloads/`, delete audio
-   - **If `keep_video=False`:** Delete both video and audio
-   - Always cleanup on error
+```mermaid
+flowchart TD
+    Start[User has Video URL] --> ExtractAudio[POST /extract-audio]
+    ExtractAudio --> AudioSaved[Audio file saved to /tmp/]
+    AudioSaved --> GetAudioPath[Get audio_file path from response]
+    GetAudioPath --> Transcribe[POST /transcribe]
+    Transcribe --> ChooseProvider{Provider?}
 
-6. **Return response with video info** (`main.py:1573-1582`)
+    ChooseProvider -->|local| WhisperX[Use whisperX model]
+    ChooseProvider -->|openai| OpenAI[Call OpenAI API]
+
+    WhisperX --> ProcessAudio[Transcribe audio]
+    OpenAI --> ProcessAudio
+
+    ProcessAudio --> FormatOutput{Output Format?}
+    FormatOutput -->|json| ReturnJSON[Return JSON with timestamps]
+    FormatOutput -->|srt| ReturnSRT[Return SRT subtitles]
+    FormatOutput -->|text| ReturnText[Return plain text]
+
+    ReturnJSON --> Done[Done]
+    ReturnSRT --> Done
+    ReturnText --> Done
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+```
+
+**Steps:**
+1. Call `POST /extract-audio?url=VIDEO_URL&output_format=mp3`
+2. API downloads audio only (not full video) to `/tmp/`
+3. Extract `audio_file` path from response (e.g., `/tmp/a3b2c1d4.mp3`)
+4. Call `POST /transcribe?audio_file=/tmp/a3b2c1d4.mp3&provider=local&model_size=turbo&output_format=json`
+5. AI processes audio and returns transcription with word-level timestamps
+6. Receive complete transcription in unified JSON format
+
+**Cost:** $0 (local) or $0.006/min (OpenAI) | **Speed:** 2-180s depending on video length and hardware
+
+---
+
+## 3. Transcribe and Save to Supabase
+
+**Use Case:** Transcribe YouTube video and save the result to Supabase database for persistent storage.
+
+```mermaid
+flowchart TD
+    Start[User has Video URL] --> TrySubtitles[GET /subtitles]
+    TrySubtitles --> HasSubtitles{Subtitles exist?}
+
+    HasSubtitles -->|Yes| GetJSON[Get JSON format transcription]
+    HasSubtitles -->|No| ExtractAudio[POST /extract-audio]
+
+    ExtractAudio --> Transcribe[POST /transcribe]
+    Transcribe --> GetJSON
+
+    GetJSON --> PrepareData[Prepare transcription data]
+    PrepareData --> AddDocID[Add document_id to payload]
+    AddDocID --> SaveSupabase[POST /transcriptions/save]
+    SaveSupabase --> Upsert[Upsert to Supabase]
+    Upsert --> Done[Transcription saved]
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+```
+
+**Steps:**
+1. Try `GET /subtitles?url=VIDEO_URL&format=json` first (free & instant)
+2. If no subtitles available, use AI transcription workflow:
+   - `POST /extract-audio?url=VIDEO_URL`
+   - `POST /transcribe?audio_file=AUDIO_PATH&output_format=json`
+3. Extract transcription data from response
+4. Prepare payload with `document_id` (UUID from your documents table)
+5. Call `POST /transcriptions/save` with JSON body:
+   ```json
+   {
+     "document_id": "UUID",
+     "segments": [...],
+     "language": "en",
+     "source": "ai",
+     "confidence_score": 0.95
+   }
+   ```
+6. Transcription saved to Supabase with UPSERT (updates if exists, inserts if new)
+
+**Requirements:** `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` configured in `.env`
+
+---
+
+## 4. Smart Transcription (Subtitles First, AI Fallback)
+
+**Use Case:** Optimal workflow - try free subtitles first, fallback to AI if unavailable.
+
+```mermaid
+flowchart TD
+    Start[User has Video URL] --> TrySubtitles[GET /subtitles]
+    TrySubtitles --> CheckResponse{Response Status?}
+
+    CheckResponse -->|200 OK| UseSubtitles[Use subtitle transcription]
+    CheckResponse -->|404 Not Found| StartAI[No subtitles available]
+
+    UseSubtitles --> Done[Done - Free & Instant]
+
+    StartAI --> ExtractAudio[POST /extract-audio]
+    ExtractAudio --> Transcribe[POST /transcribe]
+    Transcribe --> Done[Done - AI Transcription]
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+    style UseSubtitles fill:#81C784
+```
+
+**Steps:**
+1. **First Attempt:** `GET /subtitles?url=VIDEO_URL&format=json&lang=en`
+2. **Check Response:**
+   - If `200 OK`: Use subtitle transcription (instant, free)
+   - If `404 Not Found`: No subtitles available, continue to AI
+3. **AI Fallback:**
+   - `POST /extract-audio?url=VIDEO_URL`
+   - `POST /transcribe?audio_file=AUDIO_PATH&output_format=json`
+4. Receive transcription in unified JSON format (same structure for both methods)
+
+**Optimization:** This approach saves cost and time by using free subtitles when available.
+
+---
+
+## 5. Download Single Video
+
+**Use Case:** Download video file to client or save to server storage.
+
+```mermaid
+flowchart TD
+    Start[User has Video URL] --> CallDownload[GET /download]
+    CallDownload --> CheckKeep{keep=true?}
+
+    CheckKeep -->|Yes| SaveServer[Save to ./downloads/]
+    CheckKeep -->|No| TempFile[Save to /tmp/]
+
+    SaveServer --> StreamClient[Stream to client]
+    TempFile --> StreamClient
+
+    StreamClient --> ClientReceives[Client receives video file]
+    ClientReceives --> CheckTemp{Temporary?}
+
+    CheckTemp -->|Yes| CleanupTemp[Auto-delete temp file]
+    CheckTemp -->|No| KeepServer[File kept on server]
+
+    CleanupTemp --> Done[Done]
+    KeepServer --> Done
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+```
+
+**Steps:**
+1. Call `GET /download?url=VIDEO_URL&format=best[height<=720]&keep=false`
+2. API downloads video with specified quality to temporary location
+3. Video streams to client with proper filename in Content-Disposition header
+4. If `keep=false`: Temporary file auto-deleted after streaming
+5. If `keep=true`: File saved to `./downloads/` directory on server
+
+**Parameters:**
+- `format`: `best`, `best[height<=720]`, `best[height<=1080]`, etc.
+- `keep`: `true` to save on server, `false` for temporary download
+
+---
+
+## 6. Batch Download Multiple Videos
+
+**Use Case:** Download multiple videos at once with independent error handling.
+
+```mermaid
+flowchart TD
+    Start[User has array of URLs] --> CallBatch[POST /batch-download]
+    CallBatch --> ProcessLoop[Process each URL]
+    ProcessLoop --> CheckURL{URL valid?}
+
+    CheckURL -->|Yes| DownloadVideo[Download video]
+    CheckURL -->|No| RecordError[Record error]
+
+    DownloadVideo --> CheckSuccess{Success?}
+    CheckSuccess -->|Yes| RecordSuccess[Record success]
+    CheckSuccess -->|No| RecordError
+
+    RecordSuccess --> MoreURLs{More URLs?}
+    RecordError --> MoreURLs
+
+    MoreURLs -->|Yes| ProcessLoop
+    MoreURLs -->|No| ReturnResults[Return batch results]
+
+    ReturnResults --> Done[Done]
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+```
+
+**Steps:**
+1. Prepare JSON payload with array of video URLs:
+   ```json
+   {
+     "urls": ["URL1", "URL2", "URL3"],
+     "format": "best[height<=720]",
+     "keep": true
+   }
+   ```
+2. Call `POST /batch-download` with payload
+3. API processes each URL independently
+4. One failure doesn't stop the batch
+5. Receive summary response with success/failure counts:
+   ```json
+   {
+     "total": 3,
+     "successful": 2,
+     "failed": 1,
+     "results": [...]
+   }
+   ```
+
+**Features:**
+- Independent error handling per URL
+- Duplicate detection (skips already downloaded)
+- Automatic rate limiting between downloads
+
+---
+
+## 7. Process YouTube Playlist
+
+**Use Case:** Extract playlist metadata and process individual videos.
+
+```mermaid
+flowchart TD
+    Start[User has Playlist URL] --> GetPlaylist[GET /playlist/info]
+    GetPlaylist --> FilterVideos{Apply filters?}
+
+    FilterVideos -->|dateafter| FilterByDate[Filter by upload date]
+    FilterVideos -->|items| FilterByIndex[Select specific videos]
+    FilterVideos -->|max_items| LimitCount[Limit to N videos]
+    FilterVideos -->|No filters| AllVideos[Get all videos]
+
+    FilterByDate --> ReturnList[Return video list]
+    FilterByIndex --> ReturnList
+    LimitCount --> ReturnList
+    AllVideos --> ReturnList
+
+    ReturnList --> ProcessChoice{What to do?}
+
+    ProcessChoice -->|Download| LoopDownload[Loop: GET /download for each]
+    ProcessChoice -->|Transcribe| LoopTranscribe[Loop: Transcription workflow]
+    ProcessChoice -->|Both| LoopBoth[Loop: Download + Transcribe]
+
+    LoopDownload --> Done[All videos processed]
+    LoopTranscribe --> Done
+    LoopBoth --> Done
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+```
+
+**Steps:**
+1. Call `GET /playlist/info?url=PLAYLIST_URL&dateafter=today-1week&max_items=10`
+2. API extracts playlist metadata without downloading videos
+3. Apply filters (optional):
+   - `dateafter`: Filter by upload date (e.g., `today-1week`, `20240101`)
+   - `items`: Select specific videos (e.g., `1:5`, `1,3,5,7`)
+   - `max_items`: Limit number of results
+4. Receive list of video URLs with metadata:
+   ```json
+   {
+     "playlist_title": "My Playlist",
+     "video_count": 10,
+     "videos": [
+       {"url": "...", "title": "...", "duration": "..."},
+       ...
+     ]
+   }
+   ```
+5. Loop through videos and process individually:
+   - Download: `GET /download?url=VIDEO_URL`
+   - Transcribe: Use transcription workflow
+   - Both: Download then transcribe
+
+**Use Cases:**
+- Batch download recent uploads from a channel
+- Transcribe all videos in a playlist
+- Monitor channels for new content
+
+---
+
+## 8. Check Available Languages Before Transcribing
+
+**Use Case:** Verify which subtitle languages are available before requesting transcription.
+
+```mermaid
+flowchart TD
+    Start[User has Video URL] --> GetLocales[GET /transcription/locales]
+    GetLocales --> ParseResponse[Get available languages]
+    ParseResponse --> CheckLang{Desired language available?}
+
+    CheckLang -->|Yes| UseCode[Use exact language code]
+    CheckLang -->|No| ChooseAlt{Alternative?}
+
+    UseCode --> RequestSubtitles[GET /subtitles with lang code]
+    RequestSubtitles --> Done[Receive subtitles]
+
+    ChooseAlt -->|Use another language| UseCode
+    ChooseAlt -->|Use AI instead| UseAI[Use AI transcription]
+
+    UseAI --> Done
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+```
+
+**Steps:**
+1. Call `GET /transcription/locales?url=VIDEO_URL`
+2. API returns available subtitle languages:
    ```json
    {
      "title": "Video Title",
-     "segments": [...],
-     "source": "subtitle" or "ai",
-     "video": {
-       "downloaded": true,
-       "kept_on_server": true/false,
-       "file_path": "downloads/VIDEO-title.mp4" or null,
-       "file_size": 52428800,
-       "format": "best[height<=720]"
-     }
+     "locales": [
+       {"code": "en", "name": "English", "type": ["manual"]},
+       {"code": "es", "name": "Spanish", "type": ["auto"]},
+       {"code": "ara-SA", "name": "Arabic", "type": ["manual"]}
+     ],
+     "summary": {"total": 3, "manual_count": 2}
    }
    ```
+3. Find desired language in the list
+4. Use **exact code** from response (e.g., `ara-SA` for Arabic on TikTok, `ar` for Arabic on YouTube)
+5. Call `GET /subtitles?url=VIDEO_URL&lang=ara-SA&format=json`
+6. If desired language not available, fallback to AI transcription
 
-### Use Cases
-
-| Scenario | Parameters | Result |
-|----------|------------|--------|
-| **Archive + transcribe** | `keep_video=true` | Video saved in `/downloads/`, transcription returned |
-| **Transcribe only** | `keep_video=false` | Transcription returned, all files deleted |
-| **Force AI** | `force_ai=true, keep_video=true` | Skip subtitles, use AI, keep video |
-| **Retry transcription** | Use kept video file path | Can retry without re-downloading |
-
-### Error Handling
-
-All errors include detailed messages:
-
-**Download errors:**
-```json
-{"detail": "Video download failed or file not found"}
-```
-
-**Audio extraction errors:**
-```json
-{"detail": "Failed to extract audio from downloaded video"}
-```
-
-**AI transcription errors:**
-- Local provider: `"Local provider error: Out of memory..."`
-- OpenAI provider: `"OpenAI API error (HTTP 429): Rate limit exceeded"`
-- Network: `"OpenAI provider error: Connection failed - ..."`
-
-**Automatic cleanup on error:** Both video and audio files deleted if any step fails
+**Why This Matters:**
+- Language codes vary by platform (YouTube: `en`, TikTok: `eng-US`)
+- Prevents 404 errors from wrong language codes
+- Shows manual vs auto-generated subtitle availability
 
 ---
 
-## Smart Transcribe (Hybrid)
+## Workflow Decision Tree
 
-**Endpoint:** `POST /smart-transcribe`
-**Location:** `main.py:886-1090`
-**Purpose:** Intelligent transcription that tries free subtitles first, falls back to AI
-
-### Flow Diagram
+Quick reference for choosing the right workflow:
 
 ```mermaid
 flowchart TD
-    A[User Request] --> B{force_ai=true?}
-    B -->|Yes| H[Skip to AI Transcription]
-    B -->|No| C[Try Subtitle Extraction]
+    Start[I want to...] --> Goal{What's your goal?}
 
-    C --> D[yt-dlp: Extract video info]
-    D --> E{Subtitles available?}
+    Goal -->|Get transcript| CheckSubtitles{Video has subtitles?}
+    Goal -->|Download video| UseDownload[GET /download]
+    Goal -->|Process playlist| UsePlaylist[GET /playlist/info]
 
-    E -->|Yes| F[Download subtitle file VTT/SRT]
-    F --> G[Parse based on format]
-    G --> I[Return with source: subtitle]
+    CheckSubtitles -->|Don't know| CheckLocales[GET /transcription/locales]
+    CheckSubtitles -->|Yes| UseSubtitles[GET /subtitles]
+    CheckSubtitles -->|No| UseAI[AI Transcription Workflow]
 
-    E -->|No| H
-    H --> J[Call ai_transcribe internally]
-    J --> K[Return with source: ai]
+    CheckLocales --> CheckSubtitles
 
-    style I fill:#90EE90
-    style K fill:#FFB6C1
-```
+    UseSubtitles --> NeedStorage{Save to database?}
+    UseAI --> NeedStorage
 
-### Step-by-Step Logic
+    NeedStorage -->|Yes| SaveSupabase[POST /transcriptions/save]
+    NeedStorage -->|No| Done[Done]
 
-1. **Cleanup old files** (`main.py:913`)
-   - Remove old transcription files from `/tmp/`
+    UseDownload --> KeepQuestion{Save on server?}
+    KeepQuestion -->|Yes| KeepTrue[Use keep=true]
+    KeepQuestion -->|No| KeepFalse[Use keep=false]
 
-2. **Check force_ai flag** (`main.py:918`)
-   - If `force_ai=True` → Skip to Step 6
-   - If `force_ai=False` → Continue to Step 3
+    KeepTrue --> Done
+    KeepFalse --> Done
+    SaveSupabase --> Done
 
-3. **Configure yt-dlp for subtitles** (`main.py:921-927`)
-   ```python
-   ydl_opts = {
-       'writesubtitles': True,
-       'writeautomaticsub': auto,  # Include auto-generated?
-       'skip_download': True,       # Don't download video
-       'subtitleslangs': [language]
-   }
-   ```
+    UsePlaylist --> FilterQuestion{Filter videos?}
+    FilterQuestion -->|Yes| ApplyFilters[Use dateafter/items/max_items]
+    FilterQuestion -->|No| GetAll[Get all videos]
 
-4. **Extract video metadata** (`main.py:933-936`)
-   - Get title, duration
-   - Get available subtitles (manual + auto-generated)
+    ApplyFilters --> ProcessEach[Process each video]
+    GetAll --> ProcessEach
+    ProcessEach --> Done
 
-5. **Check subtitle availability** (`main.py:940-954`)
-   - Try requested language first
-   - Fall back to English variants if not found
-   - If found → Download and parse → Return (Step 5a)
-   - If not found → Continue to Step 6
-
-6. **Fall back to AI transcription** (`main.py:1072-1082`)
-   - Call `ai_transcribe()` endpoint internally
-   - Pass all parameters through
-   - Return AI transcription result
-
-**Return Fields:**
-- `source`: "subtitle" or "ai" (indicates which method was used)
-- `source_format`: "vtt" or "srt" (only for subtitles)
-- `provider`: "local" or "openai" (only for AI)
-
----
-
-## AI Transcribe
-
-**Endpoint:** `POST /ai-transcribe`
-**Location:** `main.py:647-884`
-**Purpose:** AI-powered transcription using whisperX or OpenAI
-
-### Flow Diagram
-
-```mermaid
-flowchart TD
-    A[User Request] --> B[Validate provider]
-    B --> C[Generate unique audio ID]
-    C --> D[Extract video metadata]
-    D --> E[Download best audio stream]
-    E --> F[FFmpeg: Extract to MP3]
-
-    F --> G{Provider?}
-
-    G -->|local| H[Load whisperX model]
-    H --> I[Detect device: CUDA/MPS/CPU]
-    I --> J[Set compute type: float16/int8]
-    J --> K[Transcribe with whisperX]
-
-    G -->|openai| L[Check OPENAI_API_KEY]
-    L --> M[Upload MP3 to OpenAI API]
-    M --> N[Receive transcription]
-
-    K --> O[Parse segments]
-    N --> O
-    O --> P[Delete audio file]
-    P --> Q[Format output: JSON/SRT/VTT/text]
-    Q --> R[Return result]
-
-    style R fill:#90EE90
-```
-
-### Step-by-Step Logic
-
-1. **Validate provider** (`main.py:668-674`)
-   - Must be "local" or "openai"
-   - Raise 400 error if invalid
-
-2. **Generate unique audio filename** (`main.py:679-681`)
-   - Format: `/tmp/{uuid}.mp3`
-   - Example: `/tmp/a1b2c3d4.mp3`
-
-3. **Extract video metadata** (`main.py:683-691`)
-   - Use yt-dlp with `skip_download=True`
-   - Get title and duration (no download yet)
-
-4. **Download and extract audio** (`main.py:693-723`)
-   - yt-dlp downloads best audio stream
-   - FFmpeg converts to MP3 (192 kbps)
-   - Saves to `/tmp/{uuid}.mp3`
-
-5. **Transcribe based on provider** (`main.py:730-807`)
-
-   **If provider="local":**
-   - Import whisperX and torch (`main.py:733-739`)
-   - Detect device: CUDA → MPS → CPU (`main.py:741-750`)
-   - Set compute type: GPU=float16, CPU=int8 (`main.py:742-750`)
-   - Load model with specified size (`main.py:753-758`)
-   - Transcribe audio (`main.py:761-762`)
-   - Extract segments with timestamps (`main.py:765-771`)
-
-   **If provider="openai":**
-   - Check for OPENAI_API_KEY (`main.py:775-779`)
-   - POST to OpenAI Whisper API (`main.py:783-792`)
-   - Parse response segments (`main.py:801-807`)
-
-6. **Cleanup audio file** (`main.py:811-813`)
-   - Delete MP3 immediately after transcription
-   - Also deleted on error (`main.py:874-875`)
-
-7. **Format output** (`main.py:815-870`)
-   - JSON: Full metadata + segments + text
-   - SRT: SubRip format with timestamps
-   - VTT: WebVTT format
-   - Text: Plain text only
-
-**Error Handling:**
-- Audio extraction fails → 500 error (`main.py:719-723`)
-- Provider not installed → 500 error (`main.py:735-739`)
-- OpenAI API fails → Returns status code + error message (`main.py:794-798`)
-
----
-
-## Subtitle Extraction
-
-**Endpoint:** `GET /transcription`
-**Location:** `main.py:1092+`
-**Purpose:** Extract existing subtitles from videos (no AI)
-
-### Flow Diagram
-
-```mermaid
-flowchart TD
-    A[User Request] --> B[Configure yt-dlp]
-    B --> C[Extract video info]
-    C --> D{Subtitles exist?}
-
-    D -->|Yes| E[Select best format: VTT/SRT]
-    E --> F[Download subtitle file]
-    F --> G{Output format?}
-
-    G -->|text| H[Parse to plain text]
-    G -->|json| I[Parse with timestamps]
-    G -->|srt/vtt| J[Return raw content]
-
-    H --> K[Return result]
-    I --> K
-    J --> K
-
-    D -->|No| L[Return 404 error]
-
-    style K fill:#90EE90
-    style L fill:#FF6B6B
-```
-
-### Step-by-Step Logic
-
-1. **Configure yt-dlp** (similar to smart-transcribe Step 3)
-   - Enable subtitle writing
-   - Set language preference
-   - Skip video download
-
-2. **Extract subtitles**
-   - Get manual subtitles first (higher quality)
-   - Fall back to auto-generated if needed
-   - Try language variants (en, en-US, en-GB)
-
-3. **Download subtitle content**
-   - HTTP GET request to subtitle URL
-   - Receive VTT or SRT file content
-
-4. **Parse based on format**
-   - **text**: Remove timestamps, return plain text
-   - **json**: Extract segments with start/end times
-   - **srt/vtt**: Return raw subtitle file
-
-**Error Cases:**
-- No subtitles available → 404 error
-- Download fails → 500 error
-
----
-
-## Download Video
-
-**Endpoint:** `GET /download`
-**Location:** `main.py:200-400` (approximate)
-**Purpose:** Download video and optionally save to server
-
-### Flow Diagram
-
-```mermaid
-flowchart TD
-    A[User Request] --> B[Extract video metadata]
-    B --> C[Generate temp filename]
-    C --> D[Download video with yt-dlp]
-    D --> E{keep=true?}
-
-    E -->|Yes| F[Save to /downloads]
-    E -->|No| G[Save to /tmp]
-
-    F --> H[Stream to client]
-    G --> H
-
-    H --> I{keep=true?}
-    I -->|Yes| J[Keep file in /downloads]
-    I -->|No| K[Delete from /tmp]
-
-    J --> L[Return success]
-    K --> L
-
-    style L fill:#90EE90
-```
-
-### Step-by-Step Logic
-
-1. **Extract metadata**
-   - Get video title, duration, formats
-   - No download yet
-
-2. **Download video**
-   - Use specified format (e.g., best, 720p)
-   - Save to temp location
-
-3. **Handle keep parameter**
-   - `keep=false` (default): Use `/tmp/`, delete after streaming
-   - `keep=true`: Save to `/downloads/`, persist on server
-
-4. **Stream to client**
-   - Set Content-Disposition header with filename
-   - Stream file bytes
-   - Client receives video file
-
-5. **Cleanup**
-   - If `keep=false`: Delete from `/tmp/`
-   - If `keep=true`: Keep in `/downloads/`
-
----
-
-## Error Response Format
-
-All endpoints return consistent error responses:
-
-```json
-{
-  "detail": "Descriptive error message"
-}
-```
-
-### Common Error Codes
-
-| Code | Meaning | Common Causes |
-|------|---------|---------------|
-| 400 | Bad Request | Invalid parameter, unsupported format |
-| 401 | Unauthorized | Missing or invalid API key |
-| 404 | Not Found | No subtitles available, video not found |
-| 500 | Internal Server Error | yt-dlp failed, AI provider failed, file I/O error |
-
-### AI Transcription Error Examples
-
-**whisperX not installed:**
-```json
-{
-  "detail": "whisperX not installed. Run: pip install whisperx OR use cloud provider (openai)"
-}
-```
-
-**OpenAI API Key missing:**
-```json
-{
-  "detail": "OPENAI_API_KEY not configured in environment variables"
-}
-```
-
-**OpenAI API error:**
-```json
-{
-  "detail": "OpenAI API error: {actual_error_from_openai}"
-}
-```
-
-**Audio extraction failed:**
-```json
-{
-  "detail": "Failed to extract audio from video"
-}
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
 ```
 
 ---
 
-## Quick Reference Table
+## Cost & Speed Comparison
 
-| Endpoint | Method | Use Case | Cost | Speed |
-|----------|--------|----------|------|-------|
-| `/download-and-transcribe` | POST | **Best for archival** - Download + transcribe + keep/delete | $0 or varies | Slower (downloads first) |
-| `/smart-transcribe` | POST | **Recommended** - Quick transcription without downloading | $0 or varies | Fast (if subtitles) |
-| `/ai-transcribe` | POST | Force AI transcription (no download) | $0 (local) or $0.36/hr (openai) | 2-180s |
-| `/transcription` | GET | Only extract existing subtitles | $0 | <1s |
-| `/download` | GET | Download video file only (no transcription) | $0 | Varies |
+| Workflow | Cost | Speed | Best For |
+|----------|------|-------|----------|
+| **GET /subtitles** | $0 | < 1s | Videos with existing subtitles (YouTube, TikTok, etc.) |
+| **AI Transcription (local)** | $0 | 2-180s | Any video, runs on your server (CPU/GPU) |
+| **AI Transcription (OpenAI)** | $0.006/min | 5-30s | Managed service, no hardware needed |
+| **Smart Workflow** | $0 (if subtitles exist) | < 1s or 2-180s | Always try subtitles first, AI fallback |
 
 ---
 
-## Related Documentation
+## Quick Reference: Endpoint Combinations
 
-- [Composable Workflows Guide](./composable-workflows.md) - Platform-specific workflow examples and best practices
-- [Clean API Architecture](./clean-api-architecture.md) - Single responsibility principle and endpoint design
-- [Transcription Services Guide](./transcription-services.md) - Provider comparison and features
-- [Transcription Setup Guide](./transcription-setup-guide.md) - Installation and configuration
+| Use Case | Endpoints Used | Order |
+|----------|---------------|-------|
+| Extract subtitles | `/subtitles` | 1. Call `/subtitles` |
+| AI transcription | `/extract-audio` + `/transcribe` | 1. `/extract-audio` → 2. `/transcribe` |
+| Save to database | `/subtitles` OR `/transcribe` → `/transcriptions/save` | 1. Get transcription → 2. Save |
+| Check languages | `/transcription/locales` → `/subtitles` | 1. Check locales → 2. Use exact code |
+| Process playlist | `/playlist/info` → `/download` OR `/transcribe` | 1. Get list → 2. Loop through videos |
+| Batch download | `/batch-download` | 1. Single call with array of URLs |
+| Smart transcription | `/subtitles` → `/extract-audio` + `/transcribe` (fallback) | 1. Try subtitles → 2. AI if 404 |
+
+---
+
+**For detailed parameter documentation and response examples, see [endpoints-usage.md](endpoints-usage.md)**
+
+**For complete endpoint reference, see [endpoints-index.md](endpoints-index.md)**

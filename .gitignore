@@ -215,6 +215,9 @@ __marimo__/
 *.flv
 *.wmv
 
-# Cookie files
+# Cookie files and browser state (security sensitive)
 *cookies*.txt
 *cookies*.json
+*_state.json
+cookies.txt
+session.json

@@ -13,7 +13,12 @@ pip install whisperx
 
 **Step 2: Use it**
 ```bash
-curl -X POST "http://localhost:8000/ai-transcribe?url=YOUR_VIDEO&provider=local" \
+# Extract audio first
+curl -X POST "http://localhost:8000/extract-audio?url=YOUR_VIDEO" \
+  -H "X-API-Key: YOUR_KEY"
+
+# Then transcribe the audio file
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/abc123.mp3&provider=local" \
   -H "X-API-Key: YOUR_KEY"
 ```
 
@@ -38,7 +43,12 @@ OPENAI_API_KEY=sk-...
 
 **Step 3: Use it**
 ```bash
-curl -X POST "http://localhost:8000/ai-transcribe?url=YOUR_VIDEO&provider=openai" \
+# Extract audio first
+curl -X POST "http://localhost:8000/extract-audio?url=YOUR_VIDEO" \
+  -H "X-API-Key: YOUR_KEY"
+
+# Then transcribe with OpenAI
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/abc123.mp3&provider=openai" \
   -H "X-API-Key: YOUR_KEY"
 ```
 
@@ -88,7 +98,7 @@ Both providers use **Whisper models**:
 
 **Example:**
 ```bash
-curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO&model_size=turbo&provider=local"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3&model_size=turbo&provider=local"
 ```
 
 RT = Real-Time
@@ -109,8 +119,11 @@ pip install whisperx
 
 **Use:**
 ```bash
+# Extract audio
+curl -X POST "http://localhost:8000/extract-audio?url=VIDEO"
+
 # Free, fast local transcription (GPU or CPU)
-curl -X POST "http://localhost:8000/smart-transcribe?url=VIDEO&provider=local"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3&provider=local"
 ```
 
 **Cost:** $0
@@ -129,8 +142,9 @@ curl -X POST "http://localhost:8000/smart-transcribe?url=VIDEO&provider=local"
 
 **Use:**
 ```bash
-# Free local transcription in CPU mode (3-5x real-time)
-curl -X POST "https://your-api.railway.app/smart-transcribe?url=VIDEO&provider=local"
+# Extract audio then transcribe
+curl -X POST "https://your-api.railway.app/extract-audio?url=VIDEO"
+curl -X POST "https://your-api.railway.app/transcribe?audio_file=/tmp/audio.mp3&provider=local"
 ```
 
 **Cost:** $0 (CPU processing on Railway servers)
@@ -143,8 +157,9 @@ OPENAI_API_KEY=sk-...
 
 **Use:**
 ```bash
-# Cloud transcription
-curl -X POST "https://your-api.railway.app/smart-transcribe?url=VIDEO&provider=openai"
+# Extract audio then transcribe with OpenAI
+curl -X POST "https://your-api.railway.app/extract-audio?url=VIDEO"
+curl -X POST "https://your-api.railway.app/transcribe?audio_file=/tmp/audio.mp3&provider=openai"
 ```
 
 **Cost:** $0.36/hour
@@ -179,9 +194,18 @@ def get_provider():
 
 # Use in API calls
 provider = get_provider()
+
+# Extract audio
+audio_response = requests.post(
+    f"{API_URL}/extract-audio",
+    params={"url": video_url}
+)
+audio_file = audio_response.json()["audio_file"]
+
+# Transcribe
 response = requests.post(
-    f"{API_URL}/smart-transcribe",
-    params={"url": video_url, "provider": provider}
+    f"{API_URL}/transcribe",
+    params={"audio_file": audio_file, "provider": provider}
 )
 ```
 
@@ -204,10 +228,10 @@ Both providers support the same languages:
 
 ```bash
 # Auto-detect language (recommended)
-curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3"
 
 # Specify language
-curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO&language=es"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3&language=es"
 ```
 
 ---
@@ -242,16 +266,21 @@ curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO&language=es"
 
 ## Best Practices
 
-### 1. Smart Transcription First
+### 1. Try Subtitles First
 
-Always use `/smart-transcribe` - it tries free subtitles first:
+Always check for existing subtitles before transcribing:
 
 ```bash
-curl -X POST "http://localhost:8000/smart-transcribe?url=VIDEO"
+# Try to get existing subtitles (free, instant)
+curl -X GET "http://localhost:8000/subtitles?url=VIDEO&format=json"
+
+# If no subtitles, extract audio and transcribe
+curl -X POST "http://localhost:8000/extract-audio?url=VIDEO"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3"
 ```
 
 - If video has subtitles → $0 cost (instant)
-- If no subtitles → Falls back to AI
+- If no subtitles → Use AI transcription
 
 ### 2. Environment-Based Provider
 
@@ -291,7 +320,8 @@ pip install whisperx
 
 Or switch to OpenAI:
 ```bash
-curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO&provider=openai"
+curl -X POST "http://localhost:8000/extract-audio?url=VIDEO"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3&provider=openai"
 ```
 
 ---
@@ -317,7 +347,7 @@ echo "OPENAI_API_KEY=sk-..." >> .env
 **On GPU:**
 - Use `turbo` model for best performance (70x real-time)
 ```bash
-curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO&model_size=turbo&provider=local"
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3&model_size=turbo&provider=local"
 ```
 
 **On CPU (Railway):**
@@ -367,8 +397,11 @@ curl -X POST "http://localhost:8000/ai-transcribe?url=VIDEO&model_size=turbo&pro
 # Step 1: Install
 pip install whisperx
 
-# Step 2: Use
-curl -X POST "http://localhost:8000/smart-transcribe?url=VIDEO&provider=local"
+# Step 2: Extract audio
+curl -X POST "http://localhost:8000/extract-audio?url=VIDEO"
+
+# Step 3: Transcribe
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/audio.mp3&provider=local"
 
 # Cost: $0
 # Speed: 70x real-time (GPU) or 3-5x (CPU)
@@ -377,13 +410,15 @@ curl -X POST "http://localhost:8000/smart-transcribe?url=VIDEO&provider=local"
 ### For Railway Production:
 ```bash
 # Option 1: Use whisperX in CPU mode (free)
-curl -X POST "https://your-api.railway.app/smart-transcribe?url=VIDEO&provider=local"
+curl -X POST "https://your-api.railway.app/extract-audio?url=VIDEO"
+curl -X POST "https://your-api.railway.app/transcribe?audio_file=/tmp/audio.mp3&provider=local"
 # Cost: $0
 # Speed: 3-5x real-time
 
 # Option 2: Use OpenAI (managed service)
 OPENAI_API_KEY=sk-...
-curl -X POST "https://your-api.railway.app/smart-transcribe?url=VIDEO&provider=openai"
+curl -X POST "https://your-api.railway.app/extract-audio?url=VIDEO"
+curl -X POST "https://your-api.railway.app/transcribe?audio_file=/tmp/audio.mp3&provider=openai"
 # Cost: $0.36/hour
 ```
 
@@ -393,7 +428,7 @@ curl -X POST "https://your-api.railway.app/smart-transcribe?url=VIDEO&provider=o
 - ✅ Works on Railway in CPU mode ($0 cost)
 - ✅ Word-level timestamps (not just segments)
 - ✅ 70x real-time on GPU, 3-5x on CPU
-- ✅ Smart-transcribe tries subtitles first (free)
+- ✅ Try `/subtitles` endpoint first for free instant transcription
 
 **You're all set!**
 

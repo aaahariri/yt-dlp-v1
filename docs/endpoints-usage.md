@@ -12,6 +12,85 @@ X-Api-Key: your-api-key-here
 
 ---
 
+## Overview: Transcription Features
+
+The API offers two methods for extracting transcriptions from videos, each with distinct advantages:
+
+### Method 1: Subtitle Extraction (GET /subtitles)
+
+Extract existing subtitles/captions directly from video platforms:
+
+**Key Features:**
+- ✅ **Free & Instant**: No processing time or cost (< 1 second)
+- ✅ **Manual & Auto Captions**: Supports both human-created and auto-generated subtitles
+- ✅ **Multiple Formats**: Returns VTT, SRT, plain text, or JSON with timestamps
+- ✅ **100+ Languages**: Supports all languages available on the platform
+- ✅ **High Availability**: Most YouTube videos, educational content, and popular social media have subtitles
+
+**Best For:**
+- YouTube videos with existing captions
+- TikTok videos with subtitles
+- Educational content (Coursera, Khan Academy, etc.)
+- Any video that already has subtitles
+
+**Limitations:**
+- Only works if video has existing subtitles
+- Returns 404 if no subtitles available
+
+---
+
+### Method 2: AI Transcription (POST /transcribe)
+
+Generate transcriptions using AI for videos without existing subtitles:
+
+**Key Features:**
+- ✅ **Local Processing**: Runs on your server (CPU/GPU), no cloud API fees ($0 cost)
+- ✅ **High Accuracy**: OpenAI Whisper models with 95%+ accuracy for clear audio
+- ✅ **Multi-language**: Supports 99 languages with automatic language detection
+- ✅ **Word-level Timestamps**: Provides precise timestamps (not just segments)
+- ✅ **Multiple Formats**: JSON, SRT, VTT, plain text
+- ✅ **Platform Agnostic**: Works on Railway (CPU mode), NVIDIA GPUs, Apple Silicon
+- ✅ **Two Providers**:
+  - **whisperX (local)**: $0 cost, 70x real-time on GPU, 3-5x on CPU
+  - **OpenAI API**: $0.006/min, managed service
+
+**Best For:**
+- Videos without subtitles
+- Podcasts and audio content
+- Local video files
+- When you need custom language support
+- When platform subtitles are low quality
+
+**Performance:**
+- **GPU (NVIDIA/MPS)**: 10-min video in ~8 seconds
+- **CPU**: 10-min video in 2-3 minutes
+- **Railway Compatible**: Works in CPU mode on cloud deployments
+
+---
+
+### Choosing the Right Method
+
+**Recommended Workflow (Smart Transcription):**
+1. **Try `/subtitles` first** (free, instant)
+2. **If 404 response**, use `/extract-audio` + `/transcribe` (AI transcription)
+3. Result: Always get transcription, optimize cost and speed
+
+**Quick Comparison:**
+
+| Feature | Subtitle Extraction | AI Transcription |
+|---------|-------------------|------------------|
+| **Cost** | $0 | $0 (local) or $0.006/min (OpenAI) |
+| **Speed** | < 1s | 2-180s depending on length |
+| **Accuracy** | Platform-dependent | 95%+ for clear audio |
+| **Availability** | Requires existing subtitles | Works on any video |
+| **Languages** | Platform-specific (100+) | 99 languages |
+| **Timestamps** | Segment-level | Word-level (whisperX) |
+| **Setup** | None | Requires whisperX or OpenAI API |
+
+**See [Common Workflows & Examples](#common-workflows--examples) section below for implementation details.**
+
+---
+
 ## 1. Health Check Endpoint
 
 ### `GET /`
@@ -103,11 +182,117 @@ curl -H "X-Api-Key: your-key" \
 
 ---
 
-## 3. Video Transcription Endpoint
+## 2B. Batch Video Download Endpoint
 
-### `GET /transcription`
+### `POST /batch-download`
 
-**Description**: Extracts and returns video transcriptions/subtitles from supported platforms. Downloads subtitle content directly and parses it into various formats.
+**Description**: Download multiple videos from supported platforms with automatic rate limiting and independent error handling. One failure doesn't stop the batch. Supports duplicate detection.
+
+**Authentication**: Required
+
+### Request Body (JSON)
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `urls` | array[string] | Yes | - | Array of video URLs to download |
+| `format` | string | No | `"best"` | Video quality format (same as /download) |
+| `keep` | boolean | No | `false` | Save videos to server storage |
+| `cookies_file` | string | No | `null` | Path to cookies file for authentication |
+
+### Example Request
+
+```bash
+curl -X POST "http://localhost:8000/batch-download" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: your-key" \
+  -d '{
+    "urls": [
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "https://www.youtube.com/watch?v=9bZkp7q19f0"
+    ],
+    "format": "best[height<=720]",
+    "keep": true
+  }'
+```
+
+### Response Example
+
+```json
+{
+  "total": 3,
+  "successful": 2,
+  "failed": 1,
+  "skipped": 0,
+  "results": [
+    {
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "success": true,
+      "title": "Never Gonna Give You Up",
+      "filename": "Never_Gonna_Give_You_Up_20241214_120530.mp4",
+      "file_path": "./downloads/Never_Gonna_Give_You_Up_20241214_120530.mp4",
+      "file_size": 15728640,
+      "platform": "youtube"
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "success": true,
+      "title": "Me at the zoo",
+      "filename": "Me_at_the_zoo_20241214_120545.mp4",
+      "file_path": "./downloads/Me_at_the_zoo_20241214_120545.mp4",
+      "file_size": 3145728,
+      "platform": "youtube"
+    },
+    {
+      "url": "https://invalid-url.com/video",
+      "success": false,
+      "error": "Unsupported URL: No suitable extractor found",
+      "platform": "unknown"
+    }
+  ],
+  "total_size": 18874368,
+  "processing_time": 45.23
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `total` | Total number of URLs processed |
+| `successful` | Number of successful downloads |
+| `failed` | Number of failed downloads |
+| `skipped` | Number of skipped (already downloaded) videos |
+| `results` | Array of download results for each URL |
+| `results[].success` | Boolean indicating if download succeeded |
+| `results[].error` | Error message if download failed |
+| `results[].file_path` | Server path to downloaded file (if keep=true) |
+| `results[].file_size` | File size in bytes |
+| `total_size` | Total size of all downloaded files in bytes |
+| `processing_time` | Total time taken in seconds |
+
+### Features
+
+- **Independent Error Handling**: One video failure doesn't stop the batch
+- **Duplicate Detection**: Skips already downloaded files (when keep=true)
+- **Platform Detection**: Automatically identifies source platform
+- **Automatic Rate Limiting**: Built-in delays between downloads
+- **Cookie Support**: Use cookies for authenticated/private content
+
+### Best Practices
+
+1. **Limit batch size**: Recommend 10-50 URLs per request
+2. **Use keep=true for archives**: Prevent re-downloading same videos
+3. **Handle partial failures**: Check individual results for errors
+4. **Monitor disk space**: Large batches can consume significant storage
+
+---
+
+## 3. Subtitle Extraction Endpoint
+
+### `GET /subtitles`
+
+**Description**: Extracts and returns existing video subtitles/captions from supported platforms. Downloads subtitle content directly and parses it into various formats. This is a FREE and INSTANT method - no AI processing required.
 
 **Authentication**: Required
 
@@ -160,19 +345,19 @@ Common language codes:
 **Get plain text transcript**:
 ```bash
 curl -H "X-Api-Key: your-key" \
-  "http://localhost:8000/transcription?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=en&format=text"
+  "http://localhost:8000/subtitles?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=en&format=text"
 ```
 
-**Get timestamped segments**:
+**Get timestamped segments in JSON**:
 ```bash
 curl -H "X-Api-Key: your-key" \
-  "http://localhost:8000/transcription?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=segments"
+  "http://localhost:8000/subtitles?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=json"
 ```
 
 **Get Spanish subtitles in SRT format**:
 ```bash
 curl -H "X-Api-Key: your-key" \
-  "http://localhost:8000/transcription?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=es&format=srt"
+  "http://localhost:8000/subtitles?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&lang=es&format=srt"
 ```
 
 ### Response Examples
@@ -253,7 +438,280 @@ curl -H "X-Api-Key: your-key" \
 
 ---
 
-## 4. Get Available Transcription Locales Endpoint
+## 4. Audio Extraction Endpoint
+
+### `POST /extract-audio`
+
+**Description**: Extracts audio from video URL or local file. Returns audio file path on server for use with `/transcribe` endpoint. Audio files are stored in `/tmp/` and automatically cleaned up after 1 hour.
+
+**Authentication**: Required
+
+### Parameters (Query String)
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | No* | - | Video URL to extract audio from |
+| `local_file` | string | No* | - | Path to local video file (alternative to url) |
+| `output_format` | string | No | `"mp3"` | Audio format: mp3, m4a, wav |
+| `quality` | string | No | `"192"` | Audio quality/bitrate (e.g., "192", "320") |
+| `cookies_file` | string | No | `null` | Path to cookies file for authentication |
+
+*Either `url` OR `local_file` must be provided (not both)
+
+### Example Requests
+
+**Extract audio from YouTube video**:
+```bash
+curl -X POST "http://localhost:8000/extract-audio?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&output_format=mp3&quality=192" \
+  -H "X-Api-Key: your-key"
+```
+
+**Extract audio from local file**:
+```bash
+curl -X POST "http://localhost:8000/extract-audio?local_file=/path/to/video.mp4&output_format=wav" \
+  -H "X-Api-Key: your-key"
+```
+
+### Response Example
+
+```json
+{
+  "audio_file": "/tmp/a3b2c1d4.mp3",
+  "format": "mp3",
+  "size": 4567890,
+  "title": "Rick Astley - Never Gonna Give You Up",
+  "source_type": "url",
+  "video_id": "dQw4w9WgXcQ",
+  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "duration": 212,
+  "platform": "youtube",
+  "message": "Audio extracted successfully. Use this audio_file path with POST /transcribe",
+  "expires_in": "1 hour (automatic cleanup)"
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `audio_file` | Server path to extracted audio file (use with /transcribe) |
+| `format` | Audio format (mp3, m4a, wav) |
+| `size` | File size in bytes |
+| `title` | Video/file title |
+| `source_type` | Either "url" or "local_file" |
+| `video_id` | Platform video ID (or MD5 hash for local files) |
+| `url` | Original video URL (null for local files) |
+| `duration` | Video duration in seconds (null if unavailable) |
+| `platform` | Platform name (youtube, tiktok, local, etc.) |
+| `message` | Next step instructions |
+| `expires_in` | Cleanup time for temp files |
+
+### Usage Notes
+
+1. **For URLs**: Uses yt-dlp to download ONLY audio (not full video) with `bestaudio/best` format
+2. **For local files**: Uses FFmpeg to extract audio directly from file
+3. **Temporary Storage**: Audio files stored in `/tmp/` with automatic cleanup after 1 hour
+4. **Next Step**: Pass `audio_file` path to `POST /transcribe` for AI transcription
+5. **Metadata Passthrough**: Copy `video_id`, `url`, `duration`, `platform` to `/transcribe` for unified response format
+
+### Error Responses
+
+```json
+{
+  "detail": "Either 'url' or 'local_file' parameter must be provided"
+}
+```
+
+```json
+{
+  "detail": "Local file not found: /path/to/video.mp4"
+}
+```
+
+---
+
+## 5. AI Transcription Endpoint
+
+### `POST /transcribe`
+
+**Description**: AI-powered transcription using whisperX (local) or OpenAI Whisper API. Returns transcription in multiple formats with word-level timestamps. Requires audio file from `/extract-audio` endpoint.
+
+**Authentication**: Required
+
+### Parameters (Query String)
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `audio_file` | string | Yes | - | Path to audio file on server (from /extract-audio) |
+| `language` | string | No | auto-detect | Language code (e.g., "en", "es", "fr") |
+| `model_size` | string | No | `"medium"` | Model: tiny, small, medium, large-v2, large-v3, turbo |
+| `provider` | string | No | `"local"` | Provider: local (whisperX) or openai |
+| `output_format` | string | No | `"json"` | Format: json, srt, vtt, text |
+| `video_id` | string | No | - | Video ID from /extract-audio (for unified response) |
+| `url` | string | No | - | Video URL from /extract-audio (for unified response) |
+| `duration` | int | No | - | Video duration from /extract-audio (for unified response) |
+| `platform` | string | No | - | Platform name from /extract-audio (for unified response) |
+
+### Provider Options
+
+| Provider | Cost | Speed | Features |
+|----------|------|-------|----------|
+| `local` (whisperX) | $0 | 70x real-time (GPU), 3-5x (CPU) | Word-level timestamps, runs on any hardware |
+| `openai` | $0.006/min | 5-30s per video | Managed service, no setup required |
+
+### Model Size Options
+
+| Model | Size | Speed | Accuracy | Best For |
+|-------|------|-------|----------|----------|
+| `tiny` | 39MB | Fastest | Lower | Quick drafts, testing |
+| `small` | 244MB | Very fast | Good | Balanced performance |
+| `medium` | 769MB | Fast | Very good | Default recommended |
+| `large-v2` | 1.5GB | Slower | Highest | Production quality |
+| `large-v3` | 1.5GB | Slower | Highest | Latest production |
+| `turbo` | 809MB | **Best balance** | Excellent | **Recommended** |
+
+### Example Requests
+
+**Complete workflow with unified response**:
+```bash
+# Step 1: Extract audio and get metadata
+RESPONSE=$(curl -X POST "http://localhost:8000/extract-audio?url=https://youtube.com/watch?v=dQw4w9WgXcQ" \
+  -H "X-Api-Key: your-key")
+
+AUDIO_FILE=$(echo $RESPONSE | jq -r '.audio_file')
+VIDEO_ID=$(echo $RESPONSE | jq -r '.video_id')
+URL=$(echo $RESPONSE | jq -r '.url')
+DURATION=$(echo $RESPONSE | jq -r '.duration')
+PLATFORM=$(echo $RESPONSE | jq -r '.platform')
+
+# Step 2: Transcribe with metadata for unified response
+curl -X POST "http://localhost:8000/transcribe?audio_file=$AUDIO_FILE&video_id=$VIDEO_ID&url=$URL&duration=$DURATION&platform=$PLATFORM&model_size=turbo&output_format=json" \
+  -H "X-Api-Key: your-key"
+```
+
+**Simple transcription (minimal)**:
+```bash
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/a3b2c1d4.mp3&output_format=json" \
+  -H "X-Api-Key: your-key"
+```
+
+**With specific language and model**:
+```bash
+curl -X POST "http://localhost:8000/transcribe?audio_file=/tmp/a3b2c1d4.mp3&language=en&model_size=turbo&provider=local&output_format=srt" \
+  -H "X-Api-Key: your-key"
+```
+
+### Response Examples
+
+**JSON Format (Unified Response)**:
+```json
+{
+  "video_id": "dQw4w9WgXcQ",
+  "url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+  "title": "a3b2c1d4.mp3",
+  "duration": 212,
+  "language": "en",
+  "source": "ai",
+  "provider": "local",
+  "model": "turbo",
+  "source_format": null,
+  "segments": [
+    {"start": 0.031, "end": 16.028, "text": "We're no strangers to love"},
+    {"start": 16.028, "end": 39.029, "text": "You know the rules and so do I"}
+  ],
+  "full_text": "We're no strangers to love You know the rules and so do I...",
+  "word_count": 253,
+  "segment_count": 12,
+  "metadata": {
+    "created_at": "2025-12-14T12:30:00Z",
+    "platform": "youtube",
+    "transcription_time": 15.42
+  }
+}
+```
+
+**SRT Format**:
+```
+1
+00:00:00,031 --> 00:00:16,028
+We're no strangers to love
+
+2
+00:00:16,028 --> 00:00:39,029
+You know the rules and so do I
+```
+
+**Text Format**:
+```json
+{
+  "transcript": "We're no strangers to love You know the rules and so do I...",
+  "word_count": 253
+}
+```
+
+### Response Fields (JSON Format)
+
+| Field | Description |
+|-------|-------------|
+| `video_id` | Video ID from /extract-audio or MD5 hash for local files |
+| `url` | Original video URL (null for local files) |
+| `title` | Audio filename or video title |
+| `duration` | Video duration in seconds |
+| `language` | Detected or specified language code |
+| `source` | Always "ai" for this endpoint |
+| `provider` | "local" (whisperX) or "openai" |
+| `model` | Model size used (e.g., "turbo", "medium") |
+| `segments` | Array of timestamped text segments |
+| `segments[].start` | Start time in float seconds (e.g., 0.031) |
+| `segments[].end` | End time in float seconds |
+| `full_text` | Complete transcription text |
+| `word_count` | Total word count |
+| `segment_count` | Number of segments |
+| `metadata.transcription_time` | Processing time in seconds |
+
+### Performance Notes
+
+- **GPU (NVIDIA/MPS)**: 70x faster than real-time (10-min video in ~8s)
+- **CPU**: 3-5x faster than real-time (10-min video in 2-3 min)
+- **Railway Compatible**: Works in CPU mode on Railway deployment
+- **Memory**: 2-12GB RAM depending on model size
+- **Concurrency**: Limited to prevent memory overload (queued if busy)
+
+### Error Responses
+
+```json
+{
+  "detail": "Audio file not found: /tmp/xyz.mp3. Did you run /extract-audio first?"
+}
+```
+
+```json
+{
+  "detail": "Invalid provider 'invalid'. Must be one of: local, openai"
+}
+```
+
+```json
+{
+  "detail": "Local provider error: whisperX not installed. Run: pip install whisperx OR use provider=openai"
+}
+```
+
+### Unified Response Format
+
+**Important**: Both `/subtitles` (format=json) and `/transcribe` (output_format=json) return the same unified structure for easy database storage. The key differences:
+
+| Field | /subtitles | /transcribe |
+|-------|-----------|-------------|
+| `source` | "subtitle" | "ai" |
+| `provider` | Platform name (youtube, tiktok) | "local" or "openai" |
+| `model` | null | Model name (turbo, medium, etc.) |
+| `source_format` | Original format (srt, vtt) | null |
+| `metadata.transcription_time` | null | Processing time in seconds |
+
+---
+
+## 6. Get Available Transcription Locales Endpoint
 
 ### `GET /transcription/locales`
 
@@ -422,7 +880,7 @@ if (arabicLocale) {
 
 ---
 
-## 5. Get Playlist Information Endpoint
+## 7. Get Playlist Information Endpoint
 
 ### `GET /playlist/info`
 
@@ -667,7 +1125,7 @@ for (const video of playlist.videos) {
 
 ---
 
-## 6. List Downloads Endpoint
+## 8. List Downloads Endpoint
 
 ### `GET /downloads/list`
 
@@ -714,6 +1172,162 @@ File sizes are returned in bytes. Common conversions:
 
 ---
 
+## 9. Supabase Transcription Storage (Optional)
+
+### `POST /transcriptions/save`
+
+**Description**: Saves transcription data to Supabase `document_transcriptions` table for persistent storage. Uses UPSERT behavior - updates existing transcription if found, otherwise inserts new record.
+
+**Authentication**: Required
+
+**Requirements**:
+- `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` environment variables must be configured
+- Document record must already exist in `documents` table with matching `document_id`
+
+### Parameters
+
+Request body (JSON):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `document_id` | string (UUID) | Yes | Foreign key to existing document record |
+| `segments` | array | Yes | Transcription segments with start, end, text |
+| `language` | string | Yes | Language code (max 5 chars, e.g., "en") |
+| `source` | string | Yes | Source type: "subtitle" or "ai" (max 50 chars) |
+| `confidence_score` | float | No | Confidence score 0.0-1.0 (null for subtitles) |
+| `metadata` | object | No | Additional metadata as JSONB |
+
+### Example Request
+
+```bash
+curl -X POST "http://localhost:8000/transcriptions/save" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: your-key" \
+  -d '{
+    "document_id": "4801fa8c-da28-4b7b-b039-cd696bc8a8bb",
+    "segments": [
+      {"start": 0.031, "end": 16.028, "text": "Hello world"},
+      {"start": 16.028, "end": 39.029, "text": "Welcome to the video"}
+    ],
+    "language": "en",
+    "source": "ai",
+    "confidence_score": 0.95,
+    "metadata": {
+      "model": "whisper-turbo",
+      "provider": "local",
+      "transcription_time": 97.95
+    }
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "id": "1d18f01d-1151-4fe7-a697-26adbb79adf3",
+  "document_id": "4801fa8c-da28-4b7b-b039-cd696bc8a8bb",
+  "created_at": "2025-11-08T12:00:58.043902+00:00",
+  "message": "Transcription saved successfully to Supabase with ID: 1d18f01d-1151-4fe7-a697-26adbb79adf3"
+}
+```
+
+### Storage Behavior
+
+- **Database Storage Only**: Transcription data stored in PostgreSQL JSONB column, no files created
+- **UPSERT Logic**: If transcription exists for `document_id`, it updates; otherwise inserts
+- **Auto Timestamps**: `updated_at` automatically updated via PostgreSQL trigger
+- **Foreign Key Constraint**: Validates `document_id` exists in `documents` table
+- **Unique Constraint**: Only one transcription per document allowed
+
+### `GET /transcriptions/check/{document_id}`
+
+**Description**: Checks if a transcription exists for a given document without retrieving full segments data.
+
+**Authentication**: Required
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `document_id` | string (UUID) | Yes | Document UUID to check (path parameter) |
+
+### Example Request
+
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/transcriptions/check/4801fa8c-da28-4b7b-b039-cd696bc8a8bb"
+```
+
+### Example Response (Exists)
+
+```json
+{
+  "exists": true,
+  "document_id": "4801fa8c-da28-4b7b-b039-cd696bc8a8bb",
+  "transcription": {
+    "id": "1d18f01d-1151-4fe7-a697-26adbb79adf3",
+    "language": "en",
+    "source": "ai",
+    "confidence_score": 0.95,
+    "created_at": "2025-11-08T12:00:58.043902+00:00",
+    "updated_at": "2025-11-08T12:01:13.558306+00:00"
+  }
+}
+```
+
+### Example Response (Not Exists)
+
+```json
+{
+  "exists": false,
+  "document_id": "4801fa8c-da28-4b7b-b039-cd696bc8a8bb",
+  "transcription": null
+}
+```
+
+### Common Workflow
+
+```bash
+# 1. Check if transcription already exists
+curl -H "X-Api-Key: $API_KEY" \
+  "http://localhost:8000/transcriptions/check/$DOCUMENT_ID"
+
+# 2. If not exists, get transcription from video
+curl -H "X-Api-Key: $API_KEY" \
+  "http://localhost:8000/subtitles?url=$VIDEO_URL&format=json" > transcription.json
+
+# 3. Save to Supabase (add document_id to JSON)
+curl -X POST "http://localhost:8000/transcriptions/save" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: $API_KEY" \
+  -d @transcription_with_document_id.json
+```
+
+### Error Responses
+
+**Supabase not configured**:
+```json
+{
+  "detail": "Supabase not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables."
+}
+```
+
+**Foreign key constraint violation**:
+```json
+{
+  "detail": "Error saving transcription to Supabase: {'message': 'insert or update on table \"document_transcriptions\" violates foreign key constraint \"document_transcriptions_document_id_fkey\"', ...}"
+}
+```
+
+### Setup Requirements
+
+See [docs/supabase-integration.md](supabase-integration.md) for complete setup instructions including:
+- Database schema SQL
+- Environment variable configuration
+- Advanced querying examples
+
+---
+
 ## Supported Platforms
 
 The API supports video downloads and transcriptions from 1000+ platforms including:
@@ -741,6 +1355,299 @@ The API supports video downloads and transcriptions from 1000+ platforms includi
 - Handle cases where videos are private, deleted, or geo-blocked
 - Implement retry logic for temporary network failures
 - Parse error messages for specific failure reasons
+
+---
+
+## Common Workflows & Examples
+
+This section shows real-world usage patterns for common tasks.
+
+### Workflow 1: Extract Subtitles from YouTube Video
+
+**Scenario:** Get transcription from a video that has existing subtitles (free & instant).
+
+```bash
+GET /subtitles?url=https://youtube.com/watch?v=dQw4w9WgXcQ&format=json&lang=en
+```
+
+**Response:** Returns unified format with:
+- `source="subtitle"`
+- `provider="youtube"`
+- `video_id="dQw4w9WgXcQ"`
+- Full transcription segments with timestamps
+
+**Use When:** Video has existing subtitles (YouTube, TikTok, educational content)
+
+---
+
+### Workflow 2: AI Transcription with Complete Metadata
+
+**Scenario:** Transcribe video without subtitles and maintain full metadata for database storage.
+
+**Step 1:** Extract audio and get metadata
+```bash
+POST /extract-audio?url=https://youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+**Returns:**
+```json
+{
+  "audio_file": "/tmp/abc123.mp3",
+  "video_id": "dQw4w9WgXcQ",
+  "url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+  "duration": 212,
+  "platform": "youtube"
+}
+```
+
+**Step 2:** Transcribe with metadata
+```bash
+POST /transcribe?audio_file=/tmp/abc123.mp3&video_id=dQw4w9WgXcQ&url=https://youtube.com/watch?v=dQw4w9WgXcQ&duration=212&platform=youtube&output_format=json
+```
+
+**Returns:** Unified format with:
+- `source="ai"`
+- `provider="local"` (or "openai")
+- All metadata included
+- Complete transcription segments
+
+**Use When:** Video has no subtitles, need complete metadata for database storage
+
+---
+
+### Workflow 3: Local File Transcription
+
+**Scenario:** Transcribe a local video file that you already have downloaded.
+
+**Step 1:** Extract audio from local file
+```bash
+POST /extract-audio?local_file=/path/to/video.mp4
+```
+
+**Returns:**
+```json
+{
+  "audio_file": "/tmp/xyz789.mp3",
+  "video_id": "a3f2c8d91b4e",
+  "url": null,
+  "duration": null,
+  "platform": "local"
+}
+```
+
+**Step 2:** Transcribe
+```bash
+POST /transcribe?audio_file=/tmp/xyz789.mp3&video_id=a3f2c8d91b4e&platform=local&output_format=json
+```
+
+**Returns:** Unified format with:
+- `url=null` (no URL for local files)
+- `video_id` is MD5 hash of filename
+- `platform="local"`
+
+**Use When:** Processing local video files, offline transcription
+
+---
+
+### Workflow 4: Smart Transcription (Subtitles First, AI Fallback)
+
+**Scenario:** Optimize cost and speed by trying subtitles first, falling back to AI if unavailable.
+
+**Step 1:** Try subtitles first
+```bash
+GET /subtitles?url=VIDEO_URL&format=json&lang=en
+```
+
+**Step 2:** Check response status
+- If `200 OK`: Use subtitle transcription (instant, free)
+- If `404 Not Found`: Continue to AI transcription
+
+**Step 3:** AI Fallback (if needed)
+```bash
+POST /extract-audio?url=VIDEO_URL
+POST /transcribe?audio_file=AUDIO_PATH&output_format=json
+```
+
+**Result:** Get transcription in unified JSON format regardless of source
+
+**Use When:** Always - this is the optimal workflow for any video
+
+---
+
+### Workflow 5: Transcribe and Save to Supabase
+
+**Scenario:** Get transcription and store in Supabase database for persistent storage.
+
+**Step 1:** Get transcription (try subtitles first)
+```bash
+GET /subtitles?url=VIDEO_URL&format=json
+# OR
+POST /extract-audio?url=VIDEO_URL
+POST /transcribe?audio_file=AUDIO_PATH&output_format=json
+```
+
+**Step 2:** Prepare transcription data
+```json
+{
+  "document_id": "4801fa8c-da28-4b7b-b039-cd696bc8a8bb",
+  "segments": [...],
+  "language": "en",
+  "source": "ai",
+  "confidence_score": 0.95,
+  "metadata": {
+    "model": "turbo",
+    "provider": "local"
+  }
+}
+```
+
+**Step 3:** Save to Supabase
+```bash
+POST /transcriptions/save
+```
+
+**Result:** Transcription saved with UPSERT (updates if exists, inserts if new)
+
+**Use When:** Need persistent storage, building a content library, LLM processing
+
+---
+
+### Workflow 6: Extract Screenshots from Video
+
+**Scenario:** Get screenshots from specific timestamps in a video.
+
+```bash
+POST /screenshot/video
+{
+  "video_url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+  "timestamps": ["00:01:30,500", "90.5", "00:02:00,000"],
+  "quality": 2
+}
+```
+
+**Result:** Screenshots saved to `./cache/screenshots/` with metadata
+
+**Use When:** Creating video thumbnails, visual analysis, content moderation
+
+---
+
+### Workflow 7: Process YouTube Playlist
+
+**Scenario:** Batch process all videos in a YouTube playlist.
+
+**Step 1:** Get playlist info
+```bash
+GET /playlist/info?url=PLAYLIST_URL&dateafter=today-1week&max_items=10
+```
+
+**Step 2:** Loop through videos
+```javascript
+// Example in JavaScript
+const playlist = await getPlaylistInfo(playlistUrl);
+
+for (const video of playlist.videos) {
+  // Download
+  await downloadVideo(video.url);
+
+  // Or transcribe
+  const audio = await extractAudio(video.url);
+  const transcription = await transcribe(audio.audio_file);
+}
+```
+
+**Use When:** Batch downloading, channel monitoring, playlist archiving
+
+---
+
+### Response Format Examples
+
+All transcription endpoints (`/subtitles` and `/transcribe`) return data in these formats:
+
+#### JSON Format (Unified Response)
+```json
+{
+  "video_id": "dQw4w9WgXcQ",
+  "url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+  "title": "Video Title",
+  "duration": 630,
+  "language": "en",
+  "source": "subtitle",
+  "provider": "youtube",
+  "model": null,
+  "source_format": "srt",
+  "segments": [
+    {"start": 0.24, "end": 3.5, "text": "Hello, welcome to the video."},
+    {"start": 3.5, "end": 7.2, "text": "Today we'll discuss..."}
+  ],
+  "full_text": "Hello, welcome to the video. Today we'll discuss...",
+  "word_count": 245,
+  "segment_count": 35,
+  "metadata": {
+    "created_at": "2025-11-08T10:30:00Z",
+    "platform": "youtube"
+  }
+}
+```
+
+#### SRT Format (Subtitle Files)
+```srt
+1
+00:00:00,000 --> 00:00:03,500
+Hello, welcome to the video.
+
+2
+00:00:03,500 --> 00:00:07,200
+Today we'll discuss transcription.
+```
+
+#### VTT Format (WebVTT for Web Players)
+```vtt
+WEBVTT
+
+00:00:00.000 --> 00:00:03.500
+Hello, welcome to the video.
+
+00:00:03.500 --> 00:00:07.200
+Today we'll discuss transcription.
+```
+
+#### Text Format (Plain Text)
+```json
+{
+  "transcript": "Hello, welcome to the video. Today we'll discuss transcription...",
+  "word_count": 245,
+  "title": "Video Title"
+}
+```
+
+---
+
+### Video Quality Format Options
+
+Common format strings for quality selection in `/download` and `/batch-download`:
+
+| Format String | Quality | Description |
+|---------------|---------|-------------|
+| `best` | Highest available | Downloads best quality (can be very large) |
+| `best[height<=360]` | 360p or lower | SD quality, smaller files |
+| `best[height<=720]` | 720p or lower | HD ready, good balance |
+| `best[height<=1080]` | 1080p or lower | Full HD, larger files |
+| `best[height<=1440]` | 1440p or lower | 2K quality |
+| `best[height<=2160]` | 2160p or lower | 4K quality, very large files |
+| `worst` | Lowest available | Smallest file size |
+
+**Examples:**
+```bash
+# Download 720p video
+GET /download?url=VIDEO_URL&format=best[height<=720]
+
+# Batch download in 360p
+POST /batch-download
+{
+  "urls": ["URL1", "URL2"],
+  "format": "best[height<=360]"
+}
+```
 
 ---
 
@@ -780,3 +1687,321 @@ curl -H "X-Api-Key: $API_KEY" \
   "http://localhost:8000/transcription?url=VIDEO_URL&format=text" \
   | jq -r '.transcript' > transcript.txt
 ```
+
+---
+
+## 10. Screenshot Extraction Endpoint
+
+### `POST /screenshot/video`
+
+**Description**: Extracts screenshots from videos at specified timestamps. Caches downloaded videos for reuse across requests. Supports optional Supabase upload for persistent storage.
+
+**Authentication**: Required
+
+### Request Body (JSON)
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `video_url` | string | Yes | - | Video URL from any supported platform |
+| `timestamps` | array[string] | Yes | - | Array of timestamps (SRT format "00:01:30,500" or float seconds "90.5") |
+| `upload_to_supabase` | boolean | No | `false` | Upload screenshots to Supabase storage |
+| `document_id` | string | No | `null` | Document ID for Supabase metadata linking |
+| `quality` | integer | No | `2` | FFmpeg JPEG quality 1-31 (lower = better quality) |
+
+### Timestamp Formats
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| SRT/VTT | `"00:01:30,500"` | Hours:Minutes:Seconds,Milliseconds |
+| Float seconds | `"90.5"` | Decimal seconds from start |
+
+### Example Request
+
+```bash
+curl -X POST "http://localhost:8000/screenshot/video" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: your-key" \
+  -d '{
+    "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "timestamps": ["00:00:30,000", "00:01:00,000", "90.5"],
+    "quality": 2
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "screenshots": [
+    {
+      "timestamp": 30.0,
+      "timestamp_formatted": "00:00:30,000",
+      "file_path": "./cache/screenshots/dQw4w9WgXcQ-30000.jpg",
+      "width": 1920,
+      "height": 1080,
+      "size_bytes": 123456,
+      "supabase_url": null
+    },
+    {
+      "timestamp": 60.0,
+      "timestamp_formatted": "00:01:00,000",
+      "file_path": "./cache/screenshots/dQw4w9WgXcQ-60000.jpg",
+      "width": 1920,
+      "height": 1080,
+      "size_bytes": 134567,
+      "supabase_url": null
+    },
+    {
+      "timestamp": 90.5,
+      "timestamp_formatted": "00:01:30,500",
+      "file_path": "./cache/screenshots/dQw4w9WgXcQ-90500.jpg",
+      "width": 1920,
+      "height": 1080,
+      "size_bytes": 145678,
+      "supabase_url": null
+    }
+  ],
+  "video_id": "dQw4w9WgXcQ",
+  "video_title": "Rick Astley - Never Gonna Give You Up",
+  "video_duration": 212,
+  "video_cached": false,
+  "total_extracted": 3,
+  "failed_timestamps": []
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `screenshots` | Array of extracted screenshot results |
+| `screenshots[].timestamp` | Timestamp in float seconds |
+| `screenshots[].timestamp_formatted` | Timestamp in SRT format |
+| `screenshots[].file_path` | Server path to screenshot file |
+| `screenshots[].width` | Image width in pixels |
+| `screenshots[].height` | Image height in pixels |
+| `screenshots[].size_bytes` | File size in bytes |
+| `screenshots[].supabase_url` | Public URL if uploaded to Supabase |
+| `video_id` | Platform-specific video ID |
+| `video_title` | Video title |
+| `video_duration` | Video duration in seconds |
+| `video_cached` | True if video was reused from cache |
+| `total_extracted` | Number of successfully extracted screenshots |
+| `failed_timestamps` | Array of timestamps that failed with error messages |
+
+### With Supabase Upload
+
+```bash
+curl -X POST "http://localhost:8000/screenshot/video" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: your-key" \
+  -d '{
+    "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "timestamps": ["00:01:30,500"],
+    "upload_to_supabase": true,
+    "document_id": "4801fa8c-da28-4b7b-b039-cd696bc8a8bb"
+  }'
+```
+
+Response with Supabase URL:
+```json
+{
+  "screenshots": [
+    {
+      "timestamp": 90.5,
+      "timestamp_formatted": "00:01:30,500",
+      "file_path": "./cache/screenshots/dQw4w9WgXcQ-90500.jpg",
+      "width": 1920,
+      "height": 1080,
+      "size_bytes": 145678,
+      "supabase_url": "https://xxx.supabase.co/storage/v1/object/public/public_media/screenshots/dQw4w9WgXcQ/90500.jpg"
+    }
+  ],
+  "video_id": "dQw4w9WgXcQ",
+  "video_cached": true,
+  "total_extracted": 1,
+  "failed_timestamps": []
+}
+```
+
+### Caching Behavior
+
+- **Video Cache**: Downloaded videos are stored in `./cache/videos/` with format `{platform}-{video_id}.mp4`
+- **Screenshot Cache**: Screenshots stored in `./cache/screenshots/` with format `{video_id}-{timestamp_ms}.jpg`
+- **Cache TTL**: Files automatically cleaned up after `CACHE_TTL_HOURS` (default: 3 hours)
+- **Reuse**: Subsequent requests for same video skip re-download (see `video_cached` field)
+
+### Error Handling
+
+| Condition | Status | Response |
+|-----------|--------|----------|
+| Missing video_url | 422 | Validation error |
+| Empty timestamps | 422 | Validation error |
+| Invalid timestamp format | Partial | Timestamp added to `failed_timestamps` |
+| Video download failed | 500 | `"Failed to download video"` |
+| FFmpeg error | Partial | Error added to `failed_timestamps` |
+| Timestamp beyond video duration | Partial | Error added to `failed_timestamps` |
+
+### Dependencies
+
+- **FFmpeg**: Required for screenshot extraction
+- **ffprobe**: Required for image dimension detection
+- **Supabase**: Optional for persistent storage
+
+---
+
+## 11. Cache Management Endpoints
+
+### `GET /cache`
+
+**Description**: Lists all cached files with metadata including age, size, and expiration time. Useful for monitoring cache usage and debugging.
+
+**Authentication**: Required
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `type` | string | No | - | Filter by type: videos, audio, transcriptions, screenshots |
+
+### Example Requests
+
+**List all cached files**:
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/cache"
+```
+
+**List only cached videos**:
+```bash
+curl -H "X-Api-Key: your-key" \
+  "http://localhost:8000/cache?type=videos"
+```
+
+### Example Response
+
+```json
+{
+  "files": [
+    {
+      "filename": "YT-dQw4w9WgXcQ.mp4",
+      "type": "video",
+      "path": "./cache/videos/YT-dQw4w9WgXcQ.mp4",
+      "size_bytes": 15728640,
+      "created_at": "2025-12-14T10:30:00",
+      "age_hours": 1.5,
+      "expires_in_hours": 1.5
+    },
+    {
+      "filename": "dQw4w9WgXcQ-90500.jpg",
+      "type": "screenshot",
+      "path": "./cache/screenshots/dQw4w9WgXcQ-90500.jpg",
+      "size_bytes": 145678,
+      "created_at": "2025-12-14T11:00:00",
+      "age_hours": 1.0,
+      "expires_in_hours": 2.0
+    }
+  ],
+  "summary": {
+    "total_files": 2,
+    "total_size_bytes": 15874318,
+    "ttl_hours": 3
+  }
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `files` | Array of cached file information |
+| `files[].filename` | Name of the cached file |
+| `files[].type` | File type (video, audio, transcription, screenshot) |
+| `files[].path` | Full path to the file |
+| `files[].size_bytes` | File size in bytes |
+| `files[].created_at` | ISO timestamp when file was created |
+| `files[].age_hours` | How old the file is in hours |
+| `files[].expires_in_hours` | Hours until automatic cleanup |
+| `summary.total_files` | Total number of cached files |
+| `summary.total_size_bytes` | Total size of all cached files |
+| `summary.ttl_hours` | Configured cache TTL |
+
+---
+
+### `DELETE /cache/cleanup`
+
+**Description**: Manually triggers cache cleanup, deleting all files older than the configured TTL. Can be used with cron jobs for scheduled cleanup.
+
+**Authentication**: Required
+
+### Example Request
+
+```bash
+curl -X DELETE -H "X-Api-Key: your-key" \
+  "http://localhost:8000/cache/cleanup"
+```
+
+### Example Response
+
+```json
+{
+  "message": "Cleanup complete. Deleted 5 files.",
+  "deleted": {
+    "videos": 2,
+    "audio": 1,
+    "transcriptions": 1,
+    "screenshots": 1
+  },
+  "freed_bytes": 52428800,
+  "ttl_hours": 3
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `message` | Summary message |
+| `deleted` | Breakdown of deleted files by type |
+| `deleted.videos` | Number of deleted video files |
+| `deleted.audio` | Number of deleted audio files |
+| `deleted.transcriptions` | Number of deleted transcription files |
+| `deleted.screenshots` | Number of deleted screenshot files |
+| `freed_bytes` | Total bytes freed |
+| `ttl_hours` | Configured cache TTL |
+
+### Automatic Cleanup
+
+Cache cleanup is also triggered automatically:
+- On each `/transcribe` request
+- On each `/screenshot/video` request
+
+### Cron Job Setup
+
+For production deployments, set up a cron job:
+
+```bash
+# Run cleanup every hour
+0 * * * * curl -X DELETE -H "X-Api-Key: your-key" "http://localhost:8000/cache/cleanup"
+```
+
+### Cache Directory Structure
+
+```
+./cache/
+├── videos/                        # Downloaded videos for processing
+│   └── YT-dQw4w9WgXcQ.mp4        # {platform}-{video_id}.{ext}
+├── audio/                         # Extracted audio files
+│   └── dQw4w9WgXcQ.mp3           # {video_id}.{ext}
+├── transcriptions/                # Transcription outputs
+│   └── dQw4w9WgXcQ-en.json       # {video_id}-{lang}.json
+└── screenshots/                   # Extracted screenshots
+    └── dQw4w9WgXcQ-90500.jpg     # {video_id}-{timestamp_ms}.jpg
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CACHE_DIR` | `./cache` | Base directory for all cached files |
+| `CACHE_TTL_HOURS` | `3` | Hours before files are eligible for cleanup |

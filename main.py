@@ -7,6 +7,7 @@ import hashlib
 import requests
 import unicodedata
 import asyncio
+import subprocess
 from urllib.parse import quote
 from datetime import datetime
 from fastapi import FastAPI, Query, HTTPException, Depends, Header, Body
@@ -16,6 +17,8 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import yt_dlp
 from dotenv import load_dotenv
+from supabase import create_client, Client
+from scripts.cookie_scheduler import start_scheduler, stop_scheduler, trigger_manual_refresh, get_scheduler_status
 
 app = FastAPI()
 
@@ -43,9 +46,153 @@ def verify_api_key(x_api_key: str = Header(None)):
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "./downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
-# Ensure transcriptions directory exists
-TRANSCRIPTIONS_DIR = os.getenv("TRANSCRIPTIONS_DIR", "./transcriptions")
-os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
+# Unified cache configuration
+CACHE_DIR = os.getenv("CACHE_DIR", "./cache")
+CACHE_TTL_HOURS = int(os.getenv("CACHE_TTL_HOURS", "3"))
+
+# Create cache subdirectories
+for subdir in ["videos", "audio", "transcriptions", "screenshots"]:
+    os.makedirs(os.path.join(CACHE_DIR, subdir), exist_ok=True)
+
+# yt-dlp Configuration
+# Use standalone binary (with Deno support) for YouTube downloads
+# See: https://github.com/yt-dlp/yt-dlp/issues/15012
+YTDLP_BINARY = os.getenv("YTDLP_BINARY", "./bin/yt-dlp")
+YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", None)  # Path to cookies.txt for authenticated downloads
+
+# Rate limiting to avoid YouTube bans
+# See: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
+YTDLP_MIN_SLEEP = int(os.getenv("YTDLP_MIN_SLEEP", "7"))  # Minimum seconds between requests
+YTDLP_MAX_SLEEP = int(os.getenv("YTDLP_MAX_SLEEP", "25"))  # Maximum seconds between requests
+YTDLP_SLEEP_REQUESTS = float(os.getenv("YTDLP_SLEEP_REQUESTS", "1.0"))  # Seconds between API requests
+
+# Track last YouTube request time for rate limiting
+_last_youtube_request = 0
+_youtube_request_lock = asyncio.Lock()
+
+import random
+
+async def youtube_rate_limit():
+    """Apply rate limiting for YouTube requests with random delay."""
+    global _last_youtube_request
+    async with _youtube_request_lock:
+        now = time.time()
+        elapsed = now - _last_youtube_request
+        if elapsed < YTDLP_MIN_SLEEP:
+            delay = random.uniform(YTDLP_MIN_SLEEP, YTDLP_MAX_SLEEP)
+            print(f"INFO: Rate limiting - sleeping {delay:.1f}s before YouTube request")
+            await asyncio.sleep(delay)
+        _last_youtube_request = time.time()
+
+def run_ytdlp_binary(args: list, timeout: int = 300, retry_on_auth_failure: bool = True) -> tuple:
+    """
+    Run yt-dlp standalone binary with given arguments.
+    Returns (stdout, stderr, return_code).
+    Uses Deno for JavaScript challenges (required for YouTube 2025.11+).
+
+    Auto-detects authentication failures and triggers cookie refresh on first retry.
+
+    Args:
+        args: List of yt-dlp command arguments
+        timeout: Command timeout in seconds
+        retry_on_auth_failure: If True, attempt cookie refresh and retry once on auth errors
+
+    Returns:
+        Tuple of (stdout, stderr, return_code)
+    """
+    cmd = [YTDLP_BINARY] + args
+
+    # Add rate limiting options
+    cmd.extend([
+        '--sleep-requests', str(YTDLP_SLEEP_REQUESTS),
+        '--sleep-interval', str(YTDLP_MIN_SLEEP),
+        '--max-sleep-interval', str(YTDLP_MAX_SLEEP),
+    ])
+
+    # Add cookies if configured
+    if YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
+        cmd.extend(['--cookies', YTDLP_COOKIES_FILE])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
+
+        # Detect authentication failures in stderr
+        auth_failure_patterns = [
+            r'Sign in to confirm you\'?re not a bot',
+            r'This video requires authentication',
+            r'requires? authentication',
+            r'HTTP Error 403',
+            r'This video is not available',
+            r'Video unavailable',
+            r'Private video',
+            r'This video is private',
+            r'age.restricted',
+            r'members.?only',
+        ]
+
+        is_auth_failure = any(
+            re.search(pattern, stderr, re.IGNORECASE) or re.search(pattern, stdout, re.IGNORECASE)
+            for pattern in auth_failure_patterns
+        )
+
+        # If auth failure detected and retry enabled, attempt cookie refresh and retry once
+        if is_auth_failure and retry_on_auth_failure and returncode != 0:
+            print("WARNING: Authentication failure detected in yt-dlp output")
+            print(f"WARNING: Error message: {stderr[:200]}")
+            print("INFO: Attempting automatic cookie refresh...")
+
+            # Trigger cookie refresh
+            refresh_result = trigger_manual_refresh()
+
+            if refresh_result.get("success"):
+                print("INFO: Cookie refresh successful, retrying download...")
+                # Retry once with fresh cookies (disable retry to prevent infinite loop)
+                return run_ytdlp_binary(args, timeout, retry_on_auth_failure=False)
+            else:
+                print("=" * 60)
+                print("WARNING: YOUTUBE AUTHENTICATION FAILED")
+                print("=" * 60)
+                print(f"Cookie refresh error: {refresh_result.get('error')}")
+                print("")
+                print("MANUAL ACTION REQUIRED:")
+                print("  1. Run locally: python scripts/refresh_youtube_cookies.py --interactive")
+                print("  2. Complete any Google security challenges in the browser")
+                print("  3. Upload cookies.txt and cookies_state.json to server")
+                print("")
+                print("See Deploy.md for details.")
+                print("=" * 60)
+
+        return stdout, stderr, returncode
+
+    except subprocess.TimeoutExpired:
+        return "", "Command timed out", 1
+    except Exception as e:
+        return "", str(e), 1
+
+def is_youtube_url(url: str) -> bool:
+    """Check if URL is a YouTube URL."""
+    youtube_patterns = [
+        r'youtube\.com',
+        r'youtu\.be',
+        r'youtube-nocookie\.com',
+    ]
+    return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
+
+# Log yt-dlp binary status
+if os.path.exists(YTDLP_BINARY):
+    stdout, _, _ = run_ytdlp_binary(['--version'])
+    print(f"INFO: yt-dlp standalone binary version: {stdout.strip()}")
+    print(f"INFO: Rate limiting: {YTDLP_MIN_SLEEP}-{YTDLP_MAX_SLEEP}s between downloads")
+else:
+    print(f"WARNING: yt-dlp binary not found at {YTDLP_BINARY}")
+    print("WARNING: YouTube downloads may fail. Download from: https://github.com/yt-dlp/yt-dlp/releases")
 
 # Concurrency control for transcription endpoints
 # This prevents memory overload when multiple transcription requests arrive
@@ -54,6 +201,152 @@ MAX_CONCURRENT_TRANSCRIPTIONS = int(os.getenv("MAX_CONCURRENT_TRANSCRIPTIONS", "
 transcription_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRANSCRIPTIONS)
 
 print(f"INFO: Max concurrent transcriptions set to: {MAX_CONCURRENT_TRANSCRIPTIONS}")
+
+# Device detection for AI transcription (whisperX)
+# Detect optimal device on server startup to avoid repeated detection per request
+WHISPER_DEVICE = "cpu"
+WHISPER_COMPUTE_TYPE = "int8"
+WHISPER_GPU_INFO = None
+
+try:
+    import torch
+
+    if torch.cuda.is_available():
+        WHISPER_DEVICE = "cuda"
+        WHISPER_COMPUTE_TYPE = "float16"
+
+        # Try to get GPU model name
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_count = torch.cuda.device_count()
+            WHISPER_GPU_INFO = f"{gpu_name} (x{gpu_count})" if gpu_count > 1 else gpu_name
+            print(f"INFO: NVIDIA GPU detected - whisperX will use CUDA with float16 compute type")
+            print(f"INFO: GPU Model: {WHISPER_GPU_INFO}")
+        except Exception:
+            WHISPER_GPU_INFO = "CUDA GPU (model unknown)"
+            print(f"INFO: NVIDIA GPU (CUDA) detected - whisperX will use CUDA with float16 compute type")
+
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        WHISPER_DEVICE = "mps"
+        WHISPER_COMPUTE_TYPE = "float16"
+
+        # For Apple Silicon, we can infer from system info
+        try:
+            import platform
+            import subprocess
+            result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'],
+                                  capture_output=True, text=True, timeout=1)
+            if result.returncode == 0:
+                cpu_info = result.stdout.strip()
+                WHISPER_GPU_INFO = f"Apple Silicon ({cpu_info})"
+            else:
+                WHISPER_GPU_INFO = "Apple Silicon GPU"
+        except Exception:
+            WHISPER_GPU_INFO = "Apple Silicon GPU"
+
+        print(f"INFO: Apple Silicon GPU detected - whisperX will use MPS with float16 compute type")
+        if WHISPER_GPU_INFO:
+            print(f"INFO: GPU Model: {WHISPER_GPU_INFO}")
+    else:
+        print(f"INFO: No GPU detected - whisperX will use CPU with int8 compute type (slower)")
+except ImportError:
+    print(f"INFO: PyTorch not installed - whisperX device detection skipped (will fallback to CPU if used)")
+except Exception as e:
+    print(f"WARNING: Device detection failed ({str(e)}) - whisperX will default to CPU")
+
+# Supabase client initialization (optional, only if configured)
+supabase_client: Optional[Client] = None
+try:
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        print("INFO: Supabase client initialized successfully")
+    else:
+        print("INFO: Supabase not configured (SUPABASE_URL/SUPABASE_SERVICE_KEY missing) - transcription storage disabled")
+except Exception as e:
+    print(f"WARNING: Failed to initialize Supabase client: {str(e)}")
+    supabase_client = None
+
+def get_supabase_client() -> Client:
+    """
+    Get Supabase client or raise error if not configured.
+    Use this in endpoints that require Supabase.
+    """
+    if supabase_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables."
+        )
+    return supabase_client
+
+def upload_screenshot_to_supabase(file_path: str, storage_path: str) -> dict:
+    """
+    Upload screenshot to Supabase storage bucket.
+    Reuses existing get_supabase_client().
+    """
+    supabase = get_supabase_client()
+
+    with open(file_path, 'rb') as f:
+        result = supabase.storage.from_("public_media").upload(
+            path=storage_path,
+            file=f.read(),
+            file_options={"content-type": "image/jpeg"}
+        )
+
+    # Get public URL
+    public_url = supabase.storage.from_("public_media").get_public_url(storage_path)
+
+    return {
+        "storage_path": storage_path,
+        "public_url": public_url
+    }
+
+def save_screenshot_metadata(data: dict) -> dict:
+    """Save screenshot metadata to public_media table."""
+    supabase = get_supabase_client()
+    result = supabase.table("public_media").insert(data).execute()
+    return result.data[0] if result.data else None
+
+# Application lifecycle events
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on application startup."""
+    print("INFO: Starting application...")
+
+    # Start cookie refresh scheduler
+    try:
+        start_scheduler()
+    except Exception as e:
+        print(f"WARNING: Failed to start cookie scheduler: {str(e)}")
+        print("WARNING: Scheduled cookie refresh disabled")
+
+    # Start transcription worker
+    try:
+        from scripts.transcription_worker import start_worker
+        await start_worker()
+    except Exception as e:
+        print(f"WARNING: Failed to start transcription worker: {str(e)}")
+        print("WARNING: Background transcription processing disabled")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on application shutdown."""
+    print("INFO: Shutting down application...")
+
+    # Stop transcription worker first (may have in-flight jobs)
+    try:
+        from scripts.transcription_worker import stop_worker
+        await stop_worker()
+    except Exception as e:
+        print(f"WARNING: Error stopping transcription worker: {str(e)}")
+
+    # Stop cookie refresh scheduler
+    try:
+        stop_scheduler()
+    except Exception as e:
+        print(f"WARNING: Error stopping cookie scheduler: {str(e)}")
 
 # Utility functions for subtitle parsing and cleanup
 def parse_vtt_to_text(vtt_content: str) -> str:
@@ -98,10 +391,10 @@ def cleanup_old_transcriptions(max_age_hours: int = 1):
     try:
         current_time = time.time()
         cutoff_time = current_time - (max_age_hours * 3600)
-        
+
         if not os.path.exists(TRANSCRIPTIONS_DIR):
             return
-        
+
         for filename in os.listdir(TRANSCRIPTIONS_DIR):
             filepath = os.path.join(TRANSCRIPTIONS_DIR, filename)
             if os.path.isfile(filepath):
@@ -111,6 +404,115 @@ def cleanup_old_transcriptions(max_age_hours: int = 1):
     except Exception as e:
         # Silently handle cleanup errors to not interrupt main functionality
         pass
+
+def parse_timestamp_to_seconds(timestamp: str) -> float:
+    """
+    Auto-detect and parse timestamp to seconds.
+    Supports: SRT "00:01:30,500" or float "90.5"
+    """
+    timestamp = timestamp.strip()
+
+    # Try SRT/VTT format: HH:MM:SS,mmm or HH:MM:SS.mmm
+    if ':' in timestamp:
+        timestamp = timestamp.replace(',', '.')
+        parts = timestamp.split(':')
+        if len(parts) == 3:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = float(parts[2])
+            return hours * 3600 + minutes * 60 + seconds
+
+    # Try float seconds
+    return float(timestamp)
+
+def format_seconds_to_srt(seconds: float) -> str:
+    """Convert seconds to SRT timestamp format: HH:MM:SS,mmm"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+def get_cached_video(video_id: str) -> Optional[str]:
+    """
+    Find cached video by video_id.
+    Returns file path if fresh (within TTL), None if expired or missing.
+    """
+    cache_dir = os.path.join(CACHE_DIR, "videos")
+    if not os.path.exists(cache_dir):
+        return None
+
+    for filename in os.listdir(cache_dir):
+        if f"-{video_id}." in filename:
+            filepath = os.path.join(cache_dir, filename)
+            age_hours = (time.time() - os.path.getmtime(filepath)) / 3600
+            if age_hours < CACHE_TTL_HOURS:
+                return filepath  # Fresh, reuse it
+    return None
+
+def cleanup_cache() -> dict:
+    """
+    Delete all cached files older than TTL.
+    Returns summary of deleted files.
+    """
+    cutoff = time.time() - (CACHE_TTL_HOURS * 3600)
+    deleted = {"videos": 0, "audio": 0, "transcriptions": 0, "screenshots": 0}
+    freed_bytes = 0
+
+    for subdir in deleted.keys():
+        dir_path = os.path.join(CACHE_DIR, subdir)
+        if os.path.exists(dir_path):
+            for filename in os.listdir(dir_path):
+                filepath = os.path.join(dir_path, filename)
+                if os.path.isfile(filepath) and os.path.getmtime(filepath) < cutoff:
+                    freed_bytes += os.path.getsize(filepath)
+                    os.remove(filepath)
+                    deleted[subdir] += 1
+
+    return {
+        "deleted": deleted,
+        "total_deleted": sum(deleted.values()),
+        "freed_bytes": freed_bytes
+    }
+
+def extract_screenshot(video_path: str, timestamp_seconds: float, output_path: str, quality: int = 2) -> dict:
+    """
+    Extract single frame from video using FFmpeg.
+    Returns metadata dict or raises exception.
+    """
+    cmd = [
+        'ffmpeg',
+        '-ss', str(timestamp_seconds),  # Seek position
+        '-i', video_path,                # Input file
+        '-vframes', '1',                 # Extract 1 frame
+        '-q:v', str(quality),            # JPEG quality (1-31, lower=better)
+        '-y',                            # Overwrite output
+        output_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+    if result.returncode != 0 or not os.path.exists(output_path):
+        raise Exception(f"FFmpeg failed: {result.stderr}")
+
+    # Get image dimensions using ffprobe
+    probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=width,height', '-of', 'json', output_path]
+    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+
+    width, height = 0, 0
+    if probe_result.returncode == 0:
+        probe_data = json.loads(probe_result.stdout)
+        if probe_data.get('streams'):
+            width = probe_data['streams'][0].get('width', 0)
+            height = probe_data['streams'][0].get('height', 0)
+
+    return {
+        "file_path": output_path,
+        "size_bytes": os.path.getsize(output_path),
+        "width": width,
+        "height": height
+    }
 
 def get_video_id_from_url(url: str) -> str:
     """Extract a consistent ID from video URL for caching."""
@@ -243,14 +645,132 @@ def get_language_name(code: str) -> str:
     # First try exact match
     if code in LANGUAGE_NAMES:
         return LANGUAGE_NAMES[code]
-    
+
     # Try base language code (e.g., 'en' from 'en-US')
     base_code = code.split('-')[0].lower()
     if base_code in LANGUAGE_NAMES:
         return f"{LANGUAGE_NAMES[base_code]} ({code})"
-    
+
     # Return original code if no match found
     return code
+
+def convert_srt_timestamp_to_seconds(timestamp: str) -> float:
+    """
+    Convert SRT/VTT timestamp string to seconds (float).
+
+    Examples:
+        "00:00:00,240" -> 0.24
+        "00:01:23,456" -> 83.456
+        "01:30:45.123" -> 5445.123
+    """
+    # Replace comma with dot for milliseconds (SRT uses comma, VTT uses dot)
+    timestamp = timestamp.replace(',', '.')
+
+    # Parse HH:MM:SS.mmm format
+    parts = timestamp.split(':')
+    if len(parts) == 3:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+        return hours * 3600 + minutes * 60 + seconds
+    else:
+        # Fallback: try to parse as float
+        return float(timestamp)
+
+def get_platform_from_url(url: str) -> str:
+    """
+    Detect platform from URL and return lowercase platform name.
+    Returns: youtube, tiktok, instagram, facebook, twitter, vimeo, dailymotion, twitch, or unknown.
+    """
+    url_lower = url.lower()
+
+    if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+        return 'youtube'
+    elif 'tiktok.com' in url_lower:
+        return 'tiktok'
+    elif 'instagram.com' in url_lower:
+        return 'instagram'
+    elif 'facebook.com' in url_lower or 'fb.watch' in url_lower:
+        return 'facebook'
+    elif 'twitter.com' in url_lower or 'x.com' in url_lower:
+        return 'twitter'
+    elif 'vimeo.com' in url_lower:
+        return 'vimeo'
+    elif 'dailymotion.com' in url_lower:
+        return 'dailymotion'
+    elif 'twitch.tv' in url_lower:
+        return 'twitch'
+    else:
+        return 'unknown'
+
+def create_unified_transcription_response(
+    title: str,
+    language: str,
+    segments: List[Dict[str, Any]],
+    source: str,
+    video_id: Optional[str] = None,
+    url: Optional[str] = None,
+    duration: Optional[int] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    source_format: Optional[str] = None,
+    transcription_time: Optional[float] = None,
+    platform: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Create unified transcription response structure.
+
+    Args:
+        title: Video/audio title
+        language: Language code (e.g., 'en', 'es')
+        segments: List of segments with start (float), end (float), text (str)
+        source: "subtitle" or "ai"
+        video_id: Platform video ID or filename hash
+        url: Original video URL (None for local files)
+        duration: Video duration in seconds
+        provider: Service provider (youtube, local, openai, etc.)
+        model: AI model name (if source="ai")
+        source_format: Original format (srt, vtt, etc. if source="subtitle")
+        transcription_time: Processing time in seconds (if source="ai")
+        platform: Platform name (youtube, tiktok, etc.)
+
+    Returns:
+        Unified transcription response dict
+    """
+    from datetime import datetime
+
+    # Calculate full_text and counts
+    full_text = ' '.join([s['text'].strip() for s in segments])
+    word_count = len(full_text.split())
+    segment_count = len(segments)
+
+    # Build metadata object
+    metadata = {
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "platform": platform
+    }
+    if transcription_time is not None:
+        metadata["transcription_time"] = round(transcription_time, 2)
+
+    # Build unified response
+    response = {
+        "video_id": video_id,
+        "url": url,
+        "title": title,
+        "duration": duration,
+        "language": language,
+        "source": source,
+        "provider": provider,
+        "model": model,
+        "source_format": source_format,
+        "segments": segments,
+        "full_text": full_text,
+        "word_count": word_count,
+        "segment_count": segment_count,
+        "metadata": metadata
+    }
+
+    return response
 
 def sanitize_filename(filename: str) -> str:
     """Sanitize filename to be safe for filesystem while preserving Unicode."""
@@ -365,7 +885,7 @@ async def download_video(
 ):
     try:
         # Prepare yt-dlp options for metadata extraction
-        meta_opts = {'quiet': True, 'skip_download': True}
+        meta_opts = {'quiet': True, 'skip_download': True, 'extractor_args': YTDLP_EXTRACTOR_ARGS}
 
         # Add cookies file if provided (for sites like Patreon)
         if cookies_file and os.path.exists(cookies_file):
@@ -397,8 +917,9 @@ async def download_video(
             'outtmpl': output_template,
             'quiet': True,
             'merge_output_format': 'mp4',
+            'extractor_args': YTDLP_EXTRACTOR_ARGS,
         }
-        
+
         # Add cookies file if provided (for sites like Patreon)
         if cookies_file and os.path.exists(cookies_file):
             ydl_opts['cookiefile'] = cookies_file
@@ -482,6 +1003,50 @@ class BatchDownloadResponse(BaseModel):
     total_size: int
     duration_seconds: float
 
+class TranscriptionSaveRequest(BaseModel):
+    """Request model for saving transcriptions to Supabase document_transcriptions table."""
+    document_id: str = Field(..., description="UUID of the document (foreign key to documents table)")
+    segments: List[Dict[str, Any]] = Field(..., description="Transcription segments with start, end, text")
+    language: str = Field(..., description="Language code (e.g., 'en', max 5 chars)")
+    source: str = Field(..., description="Source: 'subtitle' or 'ai' (max 50 chars)")
+    confidence_score: Optional[float] = Field(None, description="Confidence score (0.0-1.0)")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata (JSONB)")
+
+class TranscriptionSaveResponse(BaseModel):
+    """Response after saving transcription."""
+    id: str = Field(..., description="Transcription record ID (UUID)")
+    document_id: str
+    created_at: str
+    message: str
+
+class ScreenshotRequest(BaseModel):
+    """Request model for screenshot extraction from video at timestamps."""
+    video_url: str
+    timestamps: List[str]  # SRT format "00:01:30,500" or float seconds "90.5"
+    upload_to_supabase: bool = False
+    document_id: Optional[str] = None
+    quality: int = 2  # FFmpeg JPEG quality 1-31 (lower = better)
+
+class ScreenshotResult(BaseModel):
+    """Result for individual screenshot: timestamp, path, dimensions, size."""
+    timestamp: float
+    timestamp_formatted: str
+    file_path: str
+    width: int
+    height: int
+    size_bytes: int
+    supabase_url: Optional[str] = None
+
+class ScreenshotResponse(BaseModel):
+    """Response with extracted screenshots and metadata."""
+    screenshots: List[ScreenshotResult]
+    video_id: str
+    video_title: str
+    video_duration: Optional[int]
+    video_cached: bool
+    total_extracted: int
+    failed_timestamps: List[str] = []
+
 @app.post("/batch-download")
 async def batch_download_videos(
     request: BatchDownloadRequest = Body(...),
@@ -511,7 +1076,7 @@ async def batch_download_videos(
             result.platform = platform_prefix
 
             # Extract metadata without downloading
-            meta_opts = {'quiet': True, 'skip_download': True}
+            meta_opts = {'quiet': True, 'skip_download': True, 'extractor_args': YTDLP_EXTRACTOR_ARGS}
             if request.cookies_file and os.path.exists(request.cookies_file):
                 meta_opts['cookiefile'] = request.cookies_file
 
@@ -550,6 +1115,7 @@ async def batch_download_videos(
                 'outtmpl': output_template,
                 'quiet': True,
                 'merge_output_format': 'mp4',
+                'extractor_args': YTDLP_EXTRACTOR_ARGS,
             }
 
             if request.cookies_file and os.path.exists(request.cookies_file):
@@ -616,8 +1182,8 @@ async def get_subtitles(
 ):
     try:
         # Run cleanup at start of each request
-        cleanup_old_transcriptions()
-        
+        cleanup_cache()
+
         # Configure yt-dlp for subtitle extraction
         ydl_opts = {
             'writesubtitles': True,
@@ -625,8 +1191,9 @@ async def get_subtitles(
             'skip_download': True,
             'quiet': True,
             'subtitleslangs': [lang],
+            'extractor_args': YTDLP_EXTRACTOR_ARGS,
         }
-        
+
         # Add cookies file if provided (for sites like Patreon)
         if cookies_file and os.path.exists(cookies_file):
             ydl_opts['cookiefile'] = cookies_file
@@ -727,16 +1294,16 @@ async def get_subtitles(
                             # Parse timestamp line
                             time_match = re.match(r'(\d+:\d+:\d+\.\d+)\s+-->\s+(\d+:\d+:\d+\.\d+)', line)
                             if time_match and i + 1 < len(lines):
-                                start_time = time_match.group(1)
-                                end_time = time_match.group(2)
+                                start_time_str = time_match.group(1)
+                                end_time_str = time_match.group(2)
                                 text_line = lines[i + 1].strip()
                                 if text_line and not text_line.startswith('<'):
                                     segments.append({
-                                        "start": start_time,
-                                        "end": end_time,
+                                        "start": convert_srt_timestamp_to_seconds(start_time_str),
+                                        "end": convert_srt_timestamp_to_seconds(end_time_str),
                                         "text": re.sub(r'<[^>]+>', '', text_line)
                                     })
-                
+
                 elif subtitle_format == 'srt':
                     # Parse SRT with timestamps
                     srt_blocks = subtitle_content.strip().split('\n\n')
@@ -747,29 +1314,36 @@ async def get_subtitles(
                             timestamp_line = lines[1]
                             time_match = re.match(r'(\d+:\d+:\d+,\d+)\s+-->\s+(\d+:\d+:\d+,\d+)', timestamp_line)
                             if time_match:
-                                start_time = time_match.group(1)
-                                end_time = time_match.group(2)
+                                start_time_str = time_match.group(1)
+                                end_time_str = time_match.group(2)
                                 text = ' '.join(lines[2:]).strip()
                                 text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
                                 if text:
                                     segments.append({
-                                        "start": start_time,
-                                        "end": end_time,
+                                        "start": convert_srt_timestamp_to_seconds(start_time_str),
+                                        "end": convert_srt_timestamp_to_seconds(end_time_str),
                                         "text": text
                                     })
-                
-                full_text = ' '.join([seg['text'] for seg in segments])
-                
-                return {
-                    "title": title,
-                    "duration": duration,
-                    "language": lang,
-                    "source_format": subtitle_format,
-                    "segments": segments,
-                    "full_text": full_text,
-                    "word_count": len(full_text.split()),
-                    "segment_count": len(segments)
-                }
+
+                # Get video_id and platform from yt-dlp info (available from earlier extraction)
+                video_id = info.get('id')
+                platform = get_platform_from_url(url)
+
+                # Use unified response structure
+                return create_unified_transcription_response(
+                    title=title,
+                    language=lang,
+                    segments=segments,
+                    source="subtitle",
+                    video_id=video_id,
+                    url=url,
+                    duration=duration,
+                    provider=platform,
+                    model=None,
+                    source_format=subtitle_format,
+                    transcription_time=None,
+                    platform=platform
+                )
             
             elif format == "srt":
                 # Return raw SRT content (or convert VTT to SRT-like format)
@@ -812,7 +1386,7 @@ async def extract_audio(
     Extract audio from video (URL or local file).
 
     Returns the path to the extracted audio file on the server.
-    Audio files are stored in /tmp/ and automatically cleaned up after 1 hour.
+    Audio files are stored in cache and automatically cleaned up based on CACHE_TTL_HOURS.
 
     Use cases:
     - Extract audio from URL: provide 'url' parameter
@@ -835,11 +1409,11 @@ async def extract_audio(
             )
 
         # Run cleanup
-        cleanup_old_transcriptions()
+        cleanup_cache()
 
         # Generate unique ID for audio file
         audio_uid = uuid.uuid4().hex[:8]
-        audio_path = f"/tmp/{audio_uid}.{output_format}"
+        audio_path = os.path.join(CACHE_DIR, "audio", f"{audio_uid}.{output_format}")
 
         # Get source info
         if local_file:
@@ -891,37 +1465,59 @@ async def extract_audio(
             # For URLs, use yt-dlp
             source = url
             source_type = "url"
+            use_binary = is_youtube_url(url) and os.path.exists(YTDLP_BINARY)
+
+            # Apply rate limiting for YouTube
+            if is_youtube_url(url):
+                await youtube_rate_limit()
 
             # Get metadata
             try:
-                meta_opts = {'quiet': True, 'skip_download': True}
-                if cookies_file and os.path.exists(cookies_file):
-                    meta_opts['cookiefile'] = cookies_file
-
-                with yt_dlp.YoutubeDL(meta_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    title = info.get("title", "Unknown")
+                if use_binary:
+                    stdout, stderr, code = run_ytdlp_binary([
+                        '--skip-download', '--print', '%(title)s',
+                        url
+                    ])
+                    title = stdout.strip() if code == 0 else "Unknown"
+                else:
+                    meta_opts = {'quiet': True, 'skip_download': True}
+                    if cookies_file and os.path.exists(cookies_file):
+                        meta_opts['cookiefile'] = cookies_file
+                    with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        title = info.get("title", "Unknown")
             except Exception:
                 title = "Unknown"
 
             # Extract audio using yt-dlp
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': output_format,
-                    'preferredquality': quality,
-                }],
-                'outtmpl': audio_path.replace(f'.{output_format}', '.%(ext)s'),
-                'quiet': True,
-            }
-
-            if cookies_file and os.path.exists(cookies_file):
-                ydl_opts['cookiefile'] = cookies_file
-
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([source])
+                if use_binary:
+                    # Use standalone binary for YouTube
+                    stdout, stderr, code = run_ytdlp_binary([
+                        '-f', 'bestaudio/best',
+                        '-x', '--audio-format', output_format,
+                        '--audio-quality', quality,
+                        '-o', audio_path.replace(f'.{output_format}', '.%(ext)s'),
+                        url
+                    ], timeout=600)
+                    if code != 0:
+                        raise Exception(stderr)
+                else:
+                    # Use Python library for non-YouTube
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': output_format,
+                            'preferredquality': quality,
+                        }],
+                        'outtmpl': audio_path.replace(f'.{output_format}', '.%(ext)s'),
+                        'quiet': True,
+                    }
+                    if cookies_file and os.path.exists(cookies_file):
+                        ydl_opts['cookiefile'] = cookies_file
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([source])
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
@@ -935,9 +1531,10 @@ async def extract_audio(
         else:
             # For URLs, yt-dlp may change extension, so search for it
             actual_audio_path = None
-            for f in os.listdir("/tmp"):
+            audio_cache_dir = os.path.join(CACHE_DIR, "audio")
+            for f in os.listdir(audio_cache_dir):
                 if f.startswith(audio_uid):
-                    actual_audio_path = os.path.join("/tmp", f)
+                    actual_audio_path = os.path.join(audio_cache_dir, f)
                     break
 
         if not actual_audio_path or not os.path.exists(actual_audio_path):
@@ -949,6 +1546,33 @@ async def extract_audio(
         # Get file info
         file_size = os.path.getsize(actual_audio_path)
 
+        # Extract metadata for unified response
+        video_id = None
+        video_url = None
+        video_duration = None
+        platform = None
+
+        if url:
+            # For URLs, get metadata from yt-dlp
+            video_url = url
+            platform = get_platform_from_url(url)
+            try:
+                meta_opts = {'quiet': True, 'skip_download': True, 'extractor_args': YTDLP_EXTRACTOR_ARGS}
+                if cookies_file and os.path.exists(cookies_file):
+                    meta_opts['cookiefile'] = cookies_file
+
+                with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    video_id = info.get("id")
+                    video_duration = info.get("duration")
+            except Exception:
+                # If metadata extraction fails, use hash fallback
+                video_id = get_video_id_from_url(url)
+        else:
+            # For local files, generate video_id from filename
+            video_id = hashlib.md5(os.path.basename(local_file).encode()).hexdigest()[:12]
+            platform = "local"
+
         return {
             "audio_file": actual_audio_path,
             "format": output_format,
@@ -956,7 +1580,12 @@ async def extract_audio(
             "title": title,
             "source_type": source_type,
             "message": "Audio extracted successfully. Use this audio_file path with POST /transcribe",
-            "expires_in": "1 hour (automatic cleanup)"
+            "expires_in": f"{CACHE_TTL_HOURS} hours (automatic cleanup)",
+            # Metadata for transcription
+            "video_id": video_id,
+            "url": video_url,
+            "duration": video_duration,
+            "platform": platform
         }
 
     except HTTPException:
@@ -974,6 +1603,10 @@ async def transcribe_audio(
     model_size: str = Query("medium", description="Model size: tiny, small, medium, large-v2, large-v3, turbo"),
     provider: str = Query("local", description="Provider: local (whisperX) or openai"),
     output_format: str = Query("json", description="Output format: json, srt, vtt, text"),
+    video_id: str = Query(None, description="Video ID from /extract-audio (for unified response)"),
+    url: str = Query(None, description="Video URL from /extract-audio (for unified response)"),
+    duration: int = Query(None, description="Video duration from /extract-audio (for unified response)"),
+    platform: str = Query(None, description="Platform name from /extract-audio (for unified response)"),
     _: bool = Depends(verify_api_key)
 ):
     """
@@ -984,10 +1617,10 @@ async def transcribe_audio(
     - openai: OpenAI Whisper API ($0.006/min, managed service)
 
     Input: audio_file path (from /extract-audio endpoint)
-    Output: Transcription in specified format
+    Output: Transcription in unified format
 
     Workflow:
-    1. POST /extract-audio → get audio_file path
+    1. POST /extract-audio → get audio_file path and metadata
     2. POST /transcribe → get transcription
 
     Note: This endpoint is limited to MAX_CONCURRENT_TRANSCRIPTIONS concurrent requests
@@ -996,7 +1629,8 @@ async def transcribe_audio(
     # Acquire semaphore to limit concurrent transcriptions
     async with transcription_semaphore:
         return await _transcribe_audio_internal(
-            audio_file, language, model_size, provider, output_format
+            audio_file, language, model_size, provider, output_format,
+            video_id, url, duration, platform
         )
 
 
@@ -1005,10 +1639,17 @@ async def _transcribe_audio_internal(
     language: str,
     model_size: str,
     provider: str,
-    output_format: str
+    output_format: str,
+    video_id: Optional[str] = None,
+    url: Optional[str] = None,
+    duration: Optional[int] = None,
+    platform: Optional[str] = None
 ):
     """Internal transcription logic (separated for semaphore control)."""
     try:
+        # Run cleanup at start of transcription
+        cleanup_cache()
+
         # Validate audio file exists
         if not os.path.exists(audio_file):
             raise HTTPException(
@@ -1026,7 +1667,6 @@ async def _transcribe_audio_internal(
 
         # Get basic file info
         title = os.path.basename(audio_file)
-        duration = 0  # We don't have duration without re-processing
 
         # Transcribe based on provider
         transcribe_start = time.time()
@@ -1044,22 +1684,9 @@ async def _transcribe_audio_internal(
                     detail=f"Local provider error: whisperX not installed - {str(e)}. Run: pip install whisperx OR use provider=openai"
                 )
 
-            # Determine device and compute type with fallback strategy
-            device = "cpu"
-            compute_type = "int8"
-            attempted_device = "cpu"
-
-            try:
-                if torch.cuda.is_available():
-                    device = "cuda"
-                    compute_type = "float16"
-                    attempted_device = "cuda"
-                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                    device = "mps"
-                    compute_type = "float16"
-                    attempted_device = "mps"
-            except Exception:
-                pass
+            # Use global device configuration detected at server startup
+            device = WHISPER_DEVICE
+            compute_type = WHISPER_COMPUTE_TYPE
 
             # Load model with automatic fallback to CPU if GPU fails
             model_load_error = None
@@ -1084,11 +1711,11 @@ async def _transcribe_audio_internal(
                             language=language
                         )
                         # Successfully loaded on CPU after GPU failure
-                        print(f"Warning: {attempted_device.upper()} failed ({model_load_error}), fell back to CPU")
+                        print(f"WARNING: {WHISPER_DEVICE.upper()} failed ({model_load_error}), fell back to CPU")
                     except Exception as cpu_error:
                         raise HTTPException(
                             status_code=500,
-                            detail=f"Local provider error: Failed to load model '{model_size}' on {attempted_device.upper()} ({model_load_error}) and CPU ({str(cpu_error)})"
+                            detail=f"Local provider error: Failed to load model '{model_size}' on {WHISPER_DEVICE.upper()} ({model_load_error}) and CPU ({str(cpu_error)})"
                         )
                 else:
                     raise HTTPException(
@@ -1214,18 +1841,21 @@ async def _transcribe_audio_internal(
 
         # Format output
         if output_format == "json":
-            full_text = ' '.join([s['text'].strip() for s in segments])
-            return {
-                "title": title,
-                "language": detected_language,
-                "model": model_size if provider == "local" else "whisper-1",
-                "provider": provider,
-                "segments": segments,
-                "full_text": full_text,
-                "word_count": len(full_text.split()),
-                "segment_count": len(segments),
-                "transcription_time": round(transcribe_duration, 2)
-            }
+            # Use unified response structure
+            return create_unified_transcription_response(
+                title=title,
+                language=detected_language,
+                segments=segments,
+                source="ai",
+                video_id=video_id,
+                url=url,
+                duration=duration,
+                provider=provider,
+                model=model_size if provider == "local" else "whisper-1",
+                source_format=None,
+                transcription_time=transcribe_duration,
+                platform=platform
+            )
 
         elif output_format == "srt":
             # Convert to SRT format
@@ -1322,12 +1952,13 @@ async def get_transcription_locales(
             'skip_download': True,
             'quiet': True,
             'subtitleslangs': ['all'],  # Request all available languages
+            'extractor_args': YTDLP_EXTRACTOR_ARGS,
         }
-        
+
         # Add cookies file if provided (for sites like Patreon)
         if cookies_file and os.path.exists(cookies_file):
             ydl_opts['cookiefile'] = cookies_file
-        
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
@@ -1421,8 +2052,9 @@ async def get_playlist_info(
             'extract_flat': 'in_playlist',  # Extract playlist metadata without individual video details
             'quiet': True,
             'no_warnings': True,
+            'extractor_args': YTDLP_EXTRACTOR_ARGS,
         }
-        
+
         # Add date filters if provided
         if dateafter:
             ydl_opts['dateafter'] = dateafter
@@ -1560,6 +2192,427 @@ async def list_downloads(_: bool = Depends(verify_api_key)):
         return {"downloads": files, "count": len(files)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing downloads: {str(e)}")
+
+@app.post("/transcriptions/save")
+async def save_transcription(
+    request: TranscriptionSaveRequest = Body(...),
+    _: bool = Depends(verify_api_key)
+) -> TranscriptionSaveResponse:
+    """
+    Save transcription data to Supabase document_transcriptions table.
+
+    This endpoint stores transcription data linked to an existing document.
+    The document must already exist in the `documents` table.
+
+    Required: SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables.
+
+    Behavior:
+    - Uses UPSERT: If transcription exists for document_id, it updates; otherwise inserts
+    - Unique constraint: One transcription per document
+    - Auto-updates `updated_at` timestamp on updates
+
+    Example workflow:
+    1. Create document record (done elsewhere in your system)
+    2. GET /subtitles or POST /transcribe → get transcription data
+    3. POST /transcriptions/save → store in document_transcriptions table
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Prepare data for upsert
+        transcription_data = {
+            "document_id": request.document_id,
+            "segments": request.segments,  # JSONB field
+            "language": request.language,
+            "source": request.source,
+            "confidence_score": request.confidence_score,
+            "metadata": request.metadata or {}  # JSONB field, default to empty dict
+        }
+
+        # Upsert into document_transcriptions table
+        # on_conflict uses the unique constraint on document_id
+        result = supabase.table("document_transcriptions").upsert(
+            transcription_data,
+            on_conflict="document_id"
+        ).execute()
+
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save transcription to Supabase - no data returned"
+            )
+
+        saved_record = result.data[0]
+        record_id = saved_record.get("id")
+        created_at = saved_record.get("created_at")
+        document_id = saved_record.get("document_id")
+
+        return TranscriptionSaveResponse(
+            id=record_id,
+            document_id=document_id,
+            created_at=created_at,
+            message=f"Transcription saved successfully to Supabase with ID: {record_id}"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error saving transcription to Supabase: {str(e)}"
+        )
+
+@app.get("/transcriptions/check/{document_id}")
+async def check_transcription_exists(
+    document_id: str,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Check if a transcription exists for a given document ID.
+
+    Returns transcription status and basic metadata if it exists.
+
+    Required: SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables.
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Query by document_id (which has unique constraint)
+        result = supabase.table("document_transcriptions").select(
+            "id, document_id, language, source, confidence_score, created_at, updated_at"
+        ).eq("document_id", document_id).execute()
+
+        if not result.data or len(result.data) == 0:
+            return {
+                "exists": False,
+                "document_id": document_id,
+                "transcription": None
+            }
+
+        transcription = result.data[0]
+        return {
+            "exists": True,
+            "document_id": document_id,
+            "transcription": {
+                "id": transcription.get("id"),
+                "language": transcription.get("language"),
+                "source": transcription.get("source"),
+                "confidence_score": transcription.get("confidence_score"),
+                "created_at": transcription.get("created_at"),
+                "updated_at": transcription.get("updated_at")
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking transcription in Supabase: {str(e)}"
+        )
+
+@app.delete("/cache/cleanup")
+async def cache_cleanup(_: bool = Depends(verify_api_key)):
+    """
+    Delete all cached files older than CACHE_TTL_HOURS.
+
+    Use cases:
+    - Cron job target: 0 * * * * curl -X DELETE .../cache/cleanup
+    - Manual cleanup trigger
+
+    Note: Also triggered automatically on transcription requests.
+    """
+    result = cleanup_cache()
+    return {
+        "message": f"Cleanup complete. Deleted {result['total_deleted']} files.",
+        "deleted": result["deleted"],
+        "freed_bytes": result["freed_bytes"],
+        "ttl_hours": CACHE_TTL_HOURS
+    }
+
+@app.get("/cache")
+async def list_cache(
+    type: str = Query(None, description="Filter by type: videos, audio, transcriptions, screenshots"),
+    _: bool = Depends(verify_api_key)
+):
+    """
+    List all cached files with metadata.
+    Optional filter by type.
+    """
+    subdirs = [type] if type else ["videos", "audio", "transcriptions", "screenshots"]
+    files = []
+    total_size = 0
+
+    for subdir in subdirs:
+        dir_path = os.path.join(CACHE_DIR, subdir)
+        if not os.path.exists(dir_path):
+            continue
+
+        for filename in os.listdir(dir_path):
+            filepath = os.path.join(dir_path, filename)
+            if os.path.isfile(filepath):
+                stat = os.stat(filepath)
+                age_hours = (time.time() - stat.st_mtime) / 3600
+
+                files.append({
+                    "filename": filename,
+                    "type": subdir.rstrip('s'),  # "videos" -> "video"
+                    "path": filepath,
+                    "size_bytes": stat.st_size,
+                    "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "age_hours": round(age_hours, 2),
+                    "expires_in_hours": round(max(0, CACHE_TTL_HOURS - age_hours), 2)
+                })
+                total_size += stat.st_size
+
+    # Sort by age (newest first)
+    files.sort(key=lambda x: x["age_hours"])
+
+    return {
+        "files": files,
+        "summary": {
+            "total_files": len(files),
+            "total_size_bytes": total_size,
+            "ttl_hours": CACHE_TTL_HOURS
+        }
+    }
+
+@app.post("/admin/refresh-cookies")
+async def admin_refresh_cookies(_: bool = Depends(verify_api_key)):
+    """
+    Manually trigger YouTube cookie refresh immediately.
+
+    This endpoint allows manual triggering of the cookie refresh process
+    that normally runs on a schedule (every YTDLP_COOKIE_REFRESH_DAYS days).
+
+    Use cases:
+    - Auth failures detected during video downloads
+    - Proactive refresh before scheduled time
+    - Testing cookie refresh setup
+
+    Requirements:
+    - YOUTUBE_EMAIL and YOUTUBE_PASSWORD environment variables must be set
+    - Playwright and Chromium must be installed (playwright install chromium)
+
+    Returns:
+    - success: Boolean indicating if refresh succeeded
+    - message/error: Status message
+    - cookies_file: Path to cookies file (on success)
+    - timestamp: ISO timestamp of refresh attempt
+    """
+    result = trigger_manual_refresh()
+    if result["success"]:
+        return JSONResponse(content=result, status_code=200)
+    else:
+        return JSONResponse(content=result, status_code=500)
+
+@app.get("/admin/cookie-scheduler/status")
+async def get_cookie_scheduler_status(_: bool = Depends(verify_api_key)):
+    """
+    Get current status of the cookie refresh scheduler.
+
+    Returns information about:
+    - Scheduler running state
+    - Refresh interval (days)
+    - Next scheduled refresh time
+    - Last refresh timestamp and status
+    - Credentials configuration status
+    - Cookies file path and existence
+
+    Useful for monitoring and debugging the automated cookie refresh system.
+    """
+    status = get_scheduler_status()
+    return JSONResponse(content=status, status_code=200)
+
+@app.get("/admin/transcription-worker/status")
+async def get_transcription_worker_status(_: bool = Depends(verify_api_key)):
+    """
+    Get current status of the transcription worker.
+
+    Returns information about:
+    - Worker running state (enabled/disabled)
+    - Job statistics (processed, failed, retried)
+    - Last poll time and last job time
+    - Recent errors (last 5)
+    - Worker configuration (poll_interval, batch_size, etc.)
+
+    Useful for monitoring background transcription processing.
+    """
+    try:
+        from scripts.transcription_worker import get_worker_status
+        status = get_worker_status()
+        return JSONResponse(content=status, status_code=200)
+    except ImportError:
+        return JSONResponse(
+            content={"running": False, "error": "Worker module not available"},
+            status_code=200
+        )
+
+@app.post("/screenshot/video")
+async def screenshot_video(
+    request: ScreenshotRequest = Body(...),
+    _: bool = Depends(verify_api_key)
+) -> ScreenshotResponse:
+    """
+    Extract screenshots from video at specified timestamps.
+
+    - Caches downloaded videos for reuse (subsequent requests skip download)
+    - Supports SRT timestamps ("00:01:30,500") or float seconds (90.5)
+    - Optional Supabase upload
+
+    Workflow:
+    1. Check cache for existing video (by video_id)
+    2. If not cached, download video to ./cache/videos/
+    3. Extract screenshots with FFmpeg
+    4. Optional: upload to Supabase
+    5. Return screenshot paths
+    """
+    # Trigger cache cleanup at start of request
+    cleanup_cache()
+
+    try:
+        use_binary = is_youtube_url(request.video_url) and os.path.exists(YTDLP_BINARY)
+        platform = get_platform_prefix(request.video_url)
+
+        # Apply rate limiting for YouTube
+        if is_youtube_url(request.video_url):
+            await youtube_rate_limit()
+
+        # Extract video metadata
+        if use_binary:
+            # Use standalone binary for YouTube (requires Deno)
+            stdout, stderr, code = run_ytdlp_binary([
+                '--skip-download', '--print', '%(id)s\n%(title)s\n%(duration)s',
+                request.video_url
+            ])
+            if code != 0:
+                raise HTTPException(status_code=500, detail=f"Failed to extract metadata: {stderr}")
+            lines = stdout.strip().split('\n')
+            video_id = lines[0] if len(lines) > 0 else None
+            title = lines[1] if len(lines) > 1 else 'Unknown'
+            duration = int(lines[2]) if len(lines) > 2 and lines[2].isdigit() else None
+        else:
+            # Use Python library for non-YouTube
+            meta_opts = {'quiet': True, 'skip_download': True}
+            with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                info = ydl.extract_info(request.video_url, download=False)
+                video_id = info.get('id')
+                title = info.get('title', 'Unknown')
+                duration = info.get('duration')
+
+        # Check cache for existing video
+        video_path = get_cached_video(video_id)
+        video_cached = video_path is not None
+
+        if not video_path:
+            # Download video to cache
+            video_filename = f"{platform}-{video_id}.mp4"
+            video_path = os.path.join(CACHE_DIR, "videos", video_filename)
+
+            if use_binary:
+                # Use standalone binary for YouTube
+                stdout, stderr, code = run_ytdlp_binary([
+                    '-f', 'best[height<=1080]',
+                    '-o', video_path.replace('.mp4', '.%(ext)s'),
+                    '--merge-output-format', 'mp4',
+                    request.video_url
+                ], timeout=600)
+                if code != 0:
+                    raise HTTPException(status_code=500, detail=f"Failed to download video: {stderr}")
+            else:
+                # Use Python library for non-YouTube
+                ydl_opts = {
+                    'format': 'best[height<=1080]',
+                    'outtmpl': video_path.replace('.mp4', '.%(ext)s'),
+                    'quiet': True,
+                    'merge_output_format': 'mp4',
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([request.video_url])
+
+            # Find actual downloaded file (extension may vary)
+            cache_videos_dir = os.path.join(CACHE_DIR, "videos")
+            for f in os.listdir(cache_videos_dir):
+                if f.startswith(f"{platform}-{video_id}"):
+                    video_path = os.path.join(cache_videos_dir, f)
+                    break
+
+        if not video_path or not os.path.exists(video_path):
+            raise HTTPException(status_code=500, detail="Failed to download video")
+
+        # Extract screenshots
+        screenshots = []
+        failed_timestamps = []
+        screenshots_dir = os.path.join(CACHE_DIR, "screenshots")
+
+        for ts in request.timestamps:
+            try:
+                ts_seconds = parse_timestamp_to_seconds(ts)
+                ts_ms = int(ts_seconds * 1000)
+
+                # Output path: {video_id}-{timestamp_ms}.jpg
+                output_filename = f"{video_id}-{ts_ms}.jpg"
+                output_path = os.path.join(screenshots_dir, output_filename)
+
+                # Extract frame
+                result = extract_screenshot(video_path, ts_seconds, output_path, request.quality)
+
+                screenshot_result = ScreenshotResult(
+                    timestamp=ts_seconds,
+                    timestamp_formatted=format_seconds_to_srt(ts_seconds),
+                    file_path=result["file_path"],
+                    width=result["width"],
+                    height=result["height"],
+                    size_bytes=result["size_bytes"],
+                    supabase_url=None
+                )
+
+                # Optional Supabase upload
+                if request.upload_to_supabase:
+                    storage_path = f"screenshots/{video_id}/{ts_ms}.jpg"
+                    upload_result = upload_screenshot_to_supabase(output_path, storage_path)
+                    screenshot_result.supabase_url = upload_result["public_url"]
+
+                    # Save metadata to database
+                    save_screenshot_metadata({
+                        "type": "screenshot",
+                        "storage_path": storage_path,
+                        "storage_bucket": "public_media",
+                        "content_type": "image/jpeg",
+                        "size_bytes": result["size_bytes"],
+                        "source_url": request.video_url,
+                        "source_url_hash": hashlib.md5(request.video_url.encode()).hexdigest(),
+                        "title": f"{title} - {format_seconds_to_srt(ts_seconds)}",
+                        "document_id": request.document_id,
+                        "metadata": {
+                            "video_id": video_id,
+                            "timestamp": ts_seconds,
+                            "timestamp_formatted": format_seconds_to_srt(ts_seconds),
+                            "width": result["width"],
+                            "height": result["height"],
+                            "platform": platform.lower()
+                        }
+                    })
+
+                screenshots.append(screenshot_result)
+
+            except Exception as e:
+                failed_timestamps.append(f"{ts}: {str(e)}")
+
+        return ScreenshotResponse(
+            screenshots=screenshots,
+            video_id=video_id,
+            video_title=title,
+            video_duration=duration,
+            video_cached=video_cached,
+            total_extracted=len(screenshots),
+            failed_timestamps=failed_timestamps
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Screenshot extraction failed: {str(e)}")
 
 @app.get("/")
 async def root():
