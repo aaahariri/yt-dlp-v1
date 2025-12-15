@@ -1,0 +1,72 @@
+# Docker Compose for local development/testing
+# For RunPod deployment, use the Dockerfile directly
+version: '3.8'
+
+services:
+  yt-dlp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Server
+      - PORT=8000
+      - HOST=0.0.0.0
+
+      # CORS - set to your frontend URL
+      - ALLOWED_ORIGIN=*
+
+      # API Authentication
+      - API_KEY=${API_KEY:-your-api-key}
+      - PY_API_TOKEN=${PY_API_TOKEN:-}
+
+      # yt-dlp
+      - YTDLP_BINARY=/app/bin/yt-dlp
+      - YTDLP_COOKIES_FILE=/app/cookies.txt
+      - YTDLP_MIN_SLEEP=7
+      - YTDLP_MAX_SLEEP=25
+
+      # Cache
+      - CACHE_DIR=/app/cache
+      - CACHE_TTL_HOURS=3
+      - DOWNLOADS_DIR=/app/downloads
+
+      # WhisperX (transcription)
+      - WORKER_MODEL_SIZE=medium
+      - WORKER_PROVIDER=local
+      - MAX_CONCURRENT_TRANSCRIPTIONS=2
+
+      # Supabase (optional)
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY:-}
+
+      # OpenAI (optional, for cloud transcription)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+
+    volumes:
+      # Persist cache between restarts
+      - ./cache:/app/cache
+      - ./downloads:/app/downloads
+
+      # Mount cookies file (optional)
+      - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookies_state.json:/app/cookies_state.json:ro
+
+    # For GPU support (requires nvidia-docker)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    restart: unless-stopped

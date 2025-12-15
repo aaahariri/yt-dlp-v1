@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+.eggs
+*.egg-info
+*.egg
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+
+# Test files
+tests/
+pytest.ini
+.pytest_cache
+.coverage
+htmlcov
+
+# Documentation (not needed in container)
+*.md
+!README.md
+docs/
+PM/
+demo.gif
+
+# Local environment files (use env vars in container)
+.env
+.env.*
+!example.env
+
+# Local cache (will be created in container)
+cache/
+downloads/
+transcriptions/
+
+# Cookie files (mount these as volumes or secrets)
+cookies.txt
+cookies_state.json
+
+# Deployment configs for other platforms
+nixpacks.toml
+railway.json
+Procfile
+runtime.txt
+
+# Claude config
+.claude/
+CLAUDE.md
+
+# Temporary files
+*.log
+*.tmp
+tmp/
