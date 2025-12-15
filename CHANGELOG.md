@@ -21,6 +21,15 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-15 | [FIX] | [JOBS] | Fixed job_service.py upsert to match document_transcriptions schema
+- Removed non-existent columns from upsert: `full_text`, `word_count`, `segment_count`, `model`
+- Updated metadata format: `model` → `"WhisperX-{size}"`, `provider` → from `PROVIDER_NAME` env var
+- Added `word_count` and `segment_count` to metadata JSONB (not as columns)
+- Added `PROVIDER_NAME` config setting (default: "yt-dlp-api") for customizable provider tagging
+- Metadata now includes: model, provider, duration, processing_time, word_count, segment_count
+- Files: `app/services/job_service.py`, `app/config.py`, `example.env`
+- Tags: #fix #jobs #metadata #supabase
+
 2025-12-15 | [FEATURE] | [JOBS] | Endpoint-based transcription job processing from Supabase Edge Functions
 - Added POST /jobs/video-audio-transcription endpoint for receiving job batches from Supabase
 - Replaces polling worker with push-based approach: Supabase Edge Function → Python endpoint

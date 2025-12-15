@@ -342,22 +342,29 @@ async def process_single_job(
 
         print(f"INFO: Saving transcription to document_transcriptions...")
 
-        # Build full_text and counts
-        full_text = ' '.join([s.get('text', '').strip() for s in segments])
-        word_count = len(full_text.split())
+        # Calculate stats for logging (not stored in DB)
         segment_count = len(segments)
+        word_count = sum(len(s.get('text', '').split()) for s in segments)
+
+        # Build concise metadata
+        settings = get_settings()
+        trans_metadata = transcription.get("metadata", {})
+        metadata = {
+            "model": f"WhisperX-{model_size}",
+            "provider": settings.provider_name,
+            "duration": audio_result.get("duration"),
+            "processing_time": trans_metadata.get("transcription_time"),
+            "word_count": word_count,
+            "segment_count": segment_count
+        }
 
         upsert_data = {
             "document_id": document_id,
             "segments": segments,
             "language": transcription.get("language", "unknown"),
             "source": "ai",
-            "model": transcription.get("model"),
-            "full_text": full_text,
-            "word_count": word_count,
-            "segment_count": segment_count,
             "confidence_score": None,
-            "metadata": transcription.get("metadata", {}),
+            "metadata": metadata,
             "updated_at": _now_iso()
         }
 

@@ -182,6 +182,12 @@ class Settings(BaseSettings):
         description="Transcription provider (local or openai)"
     )
 
+    provider_name: str = Field(
+        default="yt-dlp-api",
+        validation_alias="PROVIDER_NAME",
+        description="Provider name for metadata tagging in transcriptions"
+    )
+
     # OpenAI Configuration
     openai_api_key: Optional[str] = Field(
         default=None,

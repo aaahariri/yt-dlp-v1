@@ -2204,7 +2204,33 @@ On job failure, the behavior depends on retry count:
 | `WORKER_MAX_RETRIES` | `5` | Maximum retry attempts before archiving |
 | `WORKER_MODEL_SIZE` | `"medium"` | Whisper model size (tiny, small, medium, large-v2, turbo) |
 | `WORKER_PROVIDER` | `"local"` | Transcription provider (local or openai) |
+| `PROVIDER_NAME` | `"yt-dlp-api"` | Provider name for metadata tagging |
 | `MAX_CONCURRENT_TRANSCRIPTIONS` | `2` | Maximum parallel transcriptions |
+
+### Transcription Data Format
+
+On successful transcription, data is upserted to `document_transcriptions`:
+
+```json
+{
+  "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca",
+  "segments": [
+    {"start": 0.031, "end": 16.028, "text": "First segment text..."},
+    {"start": 16.028, "end": 32.056, "text": "Second segment..."}
+  ],
+  "language": "en",
+  "source": "ai",
+  "confidence_score": null,
+  "metadata": {
+    "model": "WhisperX-medium",
+    "provider": "yt-dlp-api",
+    "duration": 80,
+    "processing_time": 66.81,
+    "word_count": 253,
+    "segment_count": 4
+  }
+}
+```
 
 ### Database Updates
 
