@@ -160,18 +160,14 @@ ENV MAX_CONCURRENT_TRANSCRIPTIONS=2
 ENV ALLOWED_ORIGIN=*
 
 # ==============================================================================
-# Health check
-# ==============================================================================
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/ || exit 1
-
-# ==============================================================================
-# Expose port
+# Expose port (for optional FastAPI mode)
 # ==============================================================================
 EXPOSE 8000
 
 # ==============================================================================
-# Start command
+# Start command - RunPod Serverless Handler
 # ==============================================================================
-# Use uvicorn with proper settings for production
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# The handler.py is the orchestration layer that receives RunPod jobs
+# and delegates to existing FastAPI services (job_service.py)
+# Use -u for unbuffered output (important for RunPod logs)
+CMD ["python", "-u", "handler.py"]
