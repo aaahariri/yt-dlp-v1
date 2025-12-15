@@ -67,9 +67,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ==============================================================================
 # Install Deno (required by yt-dlp for some extractors)
 # ==============================================================================
-RUN curl -fsSL https://deno.land/install.sh | sh
-ENV DENO_INSTALL="/root/.deno"
-ENV PATH="${DENO_INSTALL}/bin:${PATH}"
+# Use direct binary download instead of install script for reliability
+RUN curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && apt-get update && apt-get install -y --no-install-recommends unzip \
+    && unzip /tmp/deno.zip -d /usr/local/bin \
+    && chmod +x /usr/local/bin/deno \
+    && rm /tmp/deno.zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && deno --version
 
 # ==============================================================================
 # Set Python 3.12 as default
