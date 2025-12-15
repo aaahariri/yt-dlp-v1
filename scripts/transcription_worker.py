@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+# =============================================================================
+# DEPRECATED - NOT IN USE
+# =============================================================================
+# This polling worker has been replaced by endpoint-based job processing.
+# Jobs are now pushed to POST /jobs/video-audio-transcription by Supabase
+# Edge Functions instead of being polled by this worker.
+#
+# See: app/routers/jobs.py and app/services/job_service.py
+# Config: TRANSCRIPTION_WORKER_ENABLED=false (default)
+# =============================================================================
 """
 Video/Audio Transcription Queue Worker
 

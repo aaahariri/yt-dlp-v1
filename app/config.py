@@ -30,6 +30,13 @@ class Settings(BaseSettings):
         description="API key for endpoint authentication"
     )
 
+    # Job Worker Token (for Supabase Edge Function → Python communication)
+    py_api_token: Optional[str] = Field(
+        default=None,
+        validation_alias="PY_API_TOKEN",
+        description="Token for authenticating job requests from Supabase Edge Functions"
+    )
+
     # Directory Configuration
     downloads_dir: str = Field(
         default="./downloads",

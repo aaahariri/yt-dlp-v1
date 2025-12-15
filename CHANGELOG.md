@@ -21,6 +21,20 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-15 | [FEATURE] | [JOBS] | Endpoint-based transcription job processing from Supabase Edge Functions
+- Added POST /jobs/video-audio-transcription endpoint for receiving job batches from Supabase
+- Replaces polling worker with push-based approach: Supabase Edge Function → Python endpoint
+- New PY_API_TOKEN authentication for secure Edge Function → Python communication
+- Job service processes batches: claim → extract audio → transcribe → save → ack
+- Supports retry logic with max_retries and visibility timeout handling
+- Idempotent processing with atomic pending→processing document claim
+- Response includes summary (completed/retry/archived/deleted) and per-job results
+- Added verify_job_token dependency for Bearer token authentication
+- GET /jobs/status endpoint for health checks
+- Legacy polling worker disabled by default (TRANSCRIPTION_WORKER_ENABLED=false)
+- Files: `app/routers/jobs.py`, `app/services/job_service.py`, `app/dependencies.py`, `app/config.py`, `example.env`
+- Tags: #feature #jobs #transcription #supabase #edge-functions #endpoint
+
 2025-12-15 | [REFACTOR] | [ARCHITECTURE] | Modular architecture refactoring from monolithic main.py
 - Refactored monolithic main.py (2,622 lines) into modular FastAPI structure (~100 lines entry point)
 - Created app/ package with config, dependencies, models, routers, services, and utils submodules

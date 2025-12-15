@@ -18,6 +18,9 @@ Visual flowcharts showing common usage patterns and workflows for the Social Med
 - [7. Process YouTube Playlist](#7-process-youtube-playlist)
 - [8. Check Available Languages Before Transcribing](#8-check-available-languages-before-transcribing)
 
+**Job Queue Integration**
+- [9. Job Queue Processing (Supabase Integration)](#9-job-queue-processing-supabase-integration)
+
 ---
 
 ## 1. Extract Existing Subtitles
@@ -462,6 +465,81 @@ flowchart TD
 | Process playlist | `/playlist/info` → `/download` OR `/transcribe` | 1. Get list → 2. Loop through videos |
 | Batch download | `/batch-download` | 1. Single call with array of URLs |
 | Smart transcription | `/subtitles` → `/extract-audio` + `/transcribe` (fallback) | 1. Try subtitles → 2. AI if 404 |
+
+---
+
+## 9. Job Queue Processing (Supabase Integration)
+
+**Use Case:** Process transcription jobs pushed from Supabase via PGMQ queue and Edge Functions.
+
+```mermaid
+flowchart TD
+    Start[Supabase Edge Function] --> CallJob["POST /jobs/video-audio-transcription<br/>(Bearer PY_API_TOKEN)"]
+    CallJob --> LoopJobs{For each job}
+
+    LoopJobs --> ClaimDoc[1. Claim document<br/>pending → processing]
+    ClaimDoc --> CheckClaim{Claimed?}
+
+    CheckClaim -->|No| AlreadyProcessed[Document not pending]
+    AlreadyProcessed --> DeleteMsg[pgmq_delete_one<br/>status: deleted]
+
+    CheckClaim -->|Yes| FetchDoc[2. Fetch document details]
+    FetchDoc --> ExtractAudio[3. Extract audio from canonical_url]
+    ExtractAudio --> Transcribe[4. Transcribe with whisperX/OpenAI]
+    Transcribe --> CheckSuccess{Success?}
+
+    CheckSuccess -->|Yes| SaveTrans[5. Upsert to document_transcriptions]
+    SaveTrans --> MarkComplete[6. Mark document completed]
+    MarkComplete --> AckDelete[7. pgmq_delete_one<br/>status: completed]
+
+    CheckSuccess -->|No| CheckRetry{read_ct < max_retries?}
+
+    CheckRetry -->|Yes| ReturnPending[Mark pending + save error]
+    ReturnPending --> NoAck[Don't ack - will retry<br/>status: retry]
+
+    CheckRetry -->|No| MarkError[Mark document as error]
+    MarkError --> Archive[pgmq_archive_one<br/>status: archived]
+
+    DeleteMsg --> MoreJobs{More jobs?}
+    AckDelete --> MoreJobs
+    NoAck --> MoreJobs
+    Archive --> MoreJobs
+
+    MoreJobs -->|Yes| LoopJobs
+    MoreJobs -->|No| ReturnResults[Return batch results]
+
+    ReturnResults --> Done[Response with summary]
+
+    style Start fill:#E3F2FD
+    style Done fill:#C8E6C9
+    style AckDelete fill:#81C784
+    style Archive fill:#EF5350
+    style NoAck fill:#FFB74D
+```
+
+**Job Processing Steps:**
+
+1. **Supabase Edge Function** calls `POST /jobs/video-audio-transcription` with Bearer token
+2. For each job in the batch:
+   - **Claim document**: Atomic update `pending → processing` (idempotency guard)
+   - **Extract audio**: Download audio from `canonical_url` using yt-dlp
+   - **Transcribe**: Run whisperX (local) or OpenAI transcription
+   - **Save**: Upsert transcription to `document_transcriptions` table
+   - **Update**: Mark document as `completed` with `processed_at` timestamp
+   - **Ack**: Delete message from PGMQ queue
+3. Return summary with counts and individual job results
+
+**Failure Handling:**
+
+| Condition | Action | Result Status |
+|-----------|--------|---------------|
+| Document not pending | Delete queue message | `deleted` |
+| Error, retries remaining | Keep pending, save error | `retry` |
+| Error, max retries reached | Archive queue message | `archived` |
+
+**Authentication:** Uses `Bearer <PY_API_TOKEN>` (different from `X-Api-Key`)
+
+**Related:** See [Job Queue Processing Endpoint](endpoints-usage.md#12-job-queue-processing-endpoint) for detailed documentation.
 
 ---
 

@@ -2005,3 +2005,281 @@ For production deployments, set up a cron job:
 |----------|---------|-------------|
 | `CACHE_DIR` | `./cache` | Base directory for all cached files |
 | `CACHE_TTL_HOURS` | `3` | Hours before files are eligible for cleanup |
+
+---
+
+## 12. Job Queue Processing Endpoint
+
+### `POST /jobs/video-audio-transcription`
+
+**Description**: Process batch of video/audio transcription jobs from Supabase PGMQ queue. This endpoint is called by Supabase Edge Functions when there are pending transcription jobs in the queue.
+
+**Authentication**: Bearer token via `Authorization` header (uses `PY_API_TOKEN` environment variable, NOT `X-Api-Key`)
+
+### Request Body (JSON)
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `queue` | string | No | `"video_audio_transcription"` | PGMQ queue name |
+| `vt_seconds` | integer | No | `1800` | Visibility timeout in seconds |
+| `jobs` | array[Job] | Yes | - | Array of jobs to process |
+
+**Job Object Structure:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `msg_id` | integer | Yes | PGMQ message ID |
+| `read_ct` | integer | No | Read count (retry number), defaults to 1 |
+| `enqueued_at` | string | No | ISO timestamp when job was enqueued |
+| `document_id` | string | Yes* | Document UUID from Supabase `documents` table |
+| `message` | object | No | Nested message with `document_id` (alternative location) |
+
+*`document_id` can be at the top level or inside `message.document_id`
+
+### Example Request
+
+```bash
+curl -X POST "http://your-api/jobs/video-audio-transcription" \
+  -H "Authorization: Bearer <PY_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queue": "video_audio_transcription",
+    "vt_seconds": 1800,
+    "jobs": [
+      {
+        "msg_id": 1,
+        "read_ct": 1,
+        "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca"
+      }
+    ]
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "total": 1,
+    "completed": 1,
+    "retry": 0,
+    "archived": 0,
+    "deleted": 0
+  },
+  "results": [
+    {
+      "msg_id": 1,
+      "status": "completed",
+      "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca",
+      "word_count": 1234,
+      "segment_count": 45
+    }
+  ]
+}
+```
+
+### Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `ok` | Boolean indicating overall success |
+| `summary.total` | Total number of jobs processed |
+| `summary.completed` | Jobs successfully completed |
+| `summary.retry` | Jobs returned to queue for retry |
+| `summary.archived` | Jobs archived after max retries |
+| `summary.deleted` | Stale jobs deleted (already processed) |
+| `results` | Array of individual job results |
+
+### Job Result Status Values
+
+| Status | Description |
+|--------|-------------|
+| `completed` | Job processed successfully, transcription saved |
+| `retry` | Job failed but will retry (read_ct < max_retries) |
+| `archived` | Job failed after max retries, archived for investigation |
+| `deleted` | Job was stale (document already processed), deleted from queue |
+
+### Job Processing Flow
+
+```
+Supabase Edge Function
+        │
+        ▼ POST /jobs/video-audio-transcription (Bearer PY_API_TOKEN)
+        │
+┌───────┴───────┐
+│  For each job │
+└───────┬───────┘
+        │
+        ▼
+1. Claim document (pending → processing)
+        │
+        ▼
+2. Extract audio from canonical_url
+        │
+        ▼
+3. Transcribe with whisperX/OpenAI
+        │
+        ▼
+4. Upsert to document_transcriptions
+        │
+        ▼
+5. Update document (completed + processed_at)
+        │
+        ▼
+6. pgmq_delete_one (ack message)
+```
+
+### Failure Handling
+
+On job failure, the behavior depends on retry count:
+
+**If `read_ct < WORKER_MAX_RETRIES`:**
+- Document status returns to `pending`
+- Error message stored in `processing_error` with retry context
+- Queue message NOT acknowledged (will reappear after visibility timeout)
+- Result status: `retry`
+
+**If `read_ct >= WORKER_MAX_RETRIES`:**
+- Document status set to `error`
+- Final error message stored in `processing_error`
+- Queue message archived via `pgmq_archive_one`
+- Result status: `archived`
+
+### Error Response Examples
+
+**Document not in pending state (already processed):**
+```json
+{
+  "ok": true,
+  "summary": {"total": 1, "completed": 0, "retry": 0, "archived": 0, "deleted": 1},
+  "results": [
+    {
+      "msg_id": 1,
+      "status": "deleted",
+      "reason": "not pending",
+      "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca"
+    }
+  ]
+}
+```
+
+**Job missing document_id:**
+```json
+{
+  "ok": true,
+  "summary": {"total": 1, "completed": 0, "retry": 0, "archived": 1, "deleted": 0},
+  "results": [
+    {
+      "msg_id": 1,
+      "status": "archived",
+      "reason": "missing document_id"
+    }
+  ]
+}
+```
+
+**Transcription failed (will retry):**
+```json
+{
+  "ok": true,
+  "summary": {"total": 1, "completed": 0, "retry": 1, "archived": 0, "deleted": 0},
+  "results": [
+    {
+      "msg_id": 1,
+      "status": "retry",
+      "error": "[Step: transcribing audio with local/medium] Transcription failed: whisperX model load error",
+      "read_ct": 2,
+      "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca"
+    }
+  ]
+}
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PY_API_TOKEN` | - | Bearer token for job endpoint authentication |
+| `WORKER_MAX_RETRIES` | `5` | Maximum retry attempts before archiving |
+| `WORKER_MODEL_SIZE` | `"medium"` | Whisper model size (tiny, small, medium, large-v2, turbo) |
+| `WORKER_PROVIDER` | `"local"` | Transcription provider (local or openai) |
+| `MAX_CONCURRENT_TRANSCRIPTIONS` | `2` | Maximum parallel transcriptions |
+
+### Database Updates
+
+The job processor updates the Supabase `documents` table throughout processing:
+
+**On claim (start):**
+```sql
+UPDATE documents
+SET processing_status = 'processing', updated_at = NOW()
+WHERE id = ? AND processing_status = 'pending'
+```
+
+**On success:**
+```sql
+UPDATE documents
+SET processing_status = 'completed', processed_at = NOW(),
+    processing_error = NULL, updated_at = NOW()
+WHERE id = ?
+```
+
+**On retry failure:**
+```sql
+UPDATE documents
+SET processing_status = 'pending',
+    processing_error = 'Retry 2/5: [Step: extracting audio] Audio extraction failed: ...',
+    updated_at = NOW()
+WHERE id = ?
+```
+
+**On max retries:**
+```sql
+UPDATE documents
+SET processing_status = 'error',
+    processing_error = 'Failed after 5 attempts. Last error: ...',
+    updated_at = NOW()
+WHERE id = ?
+```
+
+### Requirements
+
+- Supabase project with `documents` and `document_transcriptions` tables
+- PGMQ extension enabled with queue `video_audio_transcription`
+- `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` environment variables
+- `PY_API_TOKEN` for endpoint authentication
+- Optional: whisperX for local transcription or OpenAI API key
+
+### Related Endpoints
+
+- [POST /transcriptions/save](#9-supabase-transcription-storage-optional) - Direct transcription save (alternative to job queue)
+- [GET /transcriptions/check/{document_id}](#get-transcriptionscheckdocument_id) - Check if transcription exists
+
+---
+
+### `GET /jobs/status`
+
+**Description**: Health check endpoint for the jobs handler. Returns configuration and status information.
+
+**Authentication**: Bearer token via `Authorization` header
+
+### Example Request
+
+```bash
+curl -H "Authorization: Bearer <PY_API_TOKEN>" \
+  "http://your-api/jobs/status"
+```
+
+### Example Response
+
+```json
+{
+  "status": "ready",
+  "config": {
+    "max_retries": 5,
+    "model_size": "medium",
+    "provider": "local",
+    "max_concurrent_transcriptions": 2
+  }
+}

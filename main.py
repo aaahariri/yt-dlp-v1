@@ -19,7 +19,8 @@ from app.routers import (
     playlist,
     screenshot,
     cache,
-    admin
+    admin,
+    jobs
 )
 
 
@@ -73,6 +74,7 @@ app.include_router(playlist.router)
 app.include_router(screenshot.router)
 app.include_router(cache.router)
 app.include_router(admin.router)
+app.include_router(jobs.router)  # Supabase Edge Function job handler
 
 
 @app.get("/", tags=["Root"])

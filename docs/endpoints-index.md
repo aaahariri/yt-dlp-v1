@@ -91,6 +91,21 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 ---
 
+## Job Queue Processing (Supabase Integration)
+
+| Endpoint | Method | Description | Implementation | Documentation |
+|----------|--------|-------------|----------------|---------------|
+| `/jobs/video-audio-transcription` | POST | Process transcription jobs from Supabase PGMQ queue | `app/routers/jobs.py` | [Usage](endpoints-usage.md#12-job-queue-processing-endpoint) |
+| `/jobs/status` | GET | Health check for jobs endpoint with config info | `app/routers/jobs.py` | [Usage](endpoints-usage.md#12-job-queue-processing-endpoint) |
+
+**Notes**:
+- Called by Supabase Edge Functions when transcription jobs are queued
+- Uses Bearer token authentication (`PY_API_TOKEN`) instead of `X-Api-Key`
+- Processes jobs with automatic retry logic (up to `WORKER_MAX_RETRIES`)
+- Updates Supabase `documents` table status and `document_transcriptions` on completion
+
+---
+
 ## Supabase Integration (Optional)
 
 | Endpoint | Method | Description | Implementation | Documentation |
