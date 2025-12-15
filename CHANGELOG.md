@@ -21,6 +21,18 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-15 | [REFACTOR] | [ARCHITECTURE] | Modular architecture refactoring from monolithic main.py
+- Refactored monolithic main.py (2,622 lines) into modular FastAPI structure (~100 lines entry point)
+- Created app/ package with config, dependencies, models, routers, services, and utils submodules
+- 8 router modules: download, subtitles, audio, transcription, playlist, screenshot, cache, admin
+- 5 service modules: ytdlp_service, cache_service, supabase_service, transcription_service, screenshot_service
+- 5 utility modules: filename_utils, timestamp_utils, subtitle_utils, language_utils, platform_utils
+- Type-safe configuration using pydantic-settings with environment variable validation
+- Added 79 pytest tests (38 unit, 41 integration) with 46% code coverage, 99% on utilities
+- All 17 API endpoints preserved with identical functionality
+- Files: `main.py`, `app/**/*.py`, `tests/**/*.py`, `docs/endpoints-index.md`
+- Tags: #refactor #architecture #modular #testing #pydantic-settings
+
 2025-12-15 | [FEATURE] | [WORKER] | Background transcription worker with PGMQ queue processing
 - Added scripts/transcription_worker.py for automatic transcription of video/audio documents
 - Polls Supabase PGMQ queue (video_audio_transcription) for pending jobs on server startup

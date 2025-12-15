@@ -16,7 +16,7 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/` | GET | Health check - returns welcome message | `main.py:60` | [Usage](endpoints-usage.md#1-health-check-endpoint) |
+| `/` | GET | Health check - returns welcome message | `main.py` | [Usage](endpoints-usage.md#1-health-check-endpoint) |
 
 ---
 
@@ -24,9 +24,9 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/download` | GET | Download videos from 1000+ platforms with quality selection | `main.py:92` | [Usage](endpoints-usage.md#2-video-download-endpoint), [Flow](endpoint-flows.md#download-video) |
-| `/batch-download` | POST | Download multiple videos with automatic rate limiting | `main.py:~150` | [Usage](endpoints-usage.md#2-video-download-endpoint) |
-| `/downloads/list` | GET | List all videos saved to server storage | `main.py:~200` | [Usage](endpoints-usage.md#6-list-downloads-endpoint) |
+| `/download` | GET | Download videos from 1000+ platforms with quality selection | `app/routers/download.py` | [Usage](endpoints-usage.md#2-video-download-endpoint), [Flow](endpoint-flows.md#download-video) |
+| `/batch-download` | POST | Download multiple videos with automatic rate limiting | `app/routers/download.py` | [Usage](endpoints-usage.md#2-video-download-endpoint) |
+| `/downloads/list` | GET | List all videos saved to server storage | `app/routers/cache.py` | [Usage](endpoints-usage.md#6-list-downloads-endpoint) |
 
 ---
 
@@ -36,15 +36,15 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/subtitles` | GET | Extract existing subtitles from videos (no processing) | `main.py:~250` | [Usage](endpoints-usage.md#3-video-transcription-endpoint), [Flow](endpoint-flows.md#subtitle-extraction) |
-| `/transcription/locales` | GET | Get available subtitle languages for a video | `main.py:~320` | [Usage](endpoints-usage.md#4-get-available-transcription-locales-endpoint) |
+| `/subtitles` | GET | Extract existing subtitles from videos (no processing) | `app/routers/subtitles.py` | [Usage](endpoints-usage.md#3-video-transcription-endpoint), [Flow](endpoint-flows.md#subtitle-extraction) |
+| `/transcription/locales` | GET | Get available subtitle languages for a video | `app/routers/subtitles.py` | [Usage](endpoints-usage.md#4-get-available-transcription-locales-endpoint) |
 
 ### AI Transcription (whisperX / OpenAI)
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/extract-audio` | POST | Extract audio from video URL or local file | `main.py:~380` | [Usage](endpoints-usage.md#5-audio-extraction-endpoint), [Flow](endpoint-flows.md#audio-extraction) |
-| `/transcribe` | POST | AI-powered transcription with multi-provider support | `main.py:~450` | [Usage](endpoints-usage.md#6-ai-transcription-endpoint), [Flow](endpoint-flows.md#ai-transcription) |
+| `/extract-audio` | POST | Extract audio from video URL or local file | `app/routers/audio.py` | [Usage](endpoints-usage.md#5-audio-extraction-endpoint), [Flow](endpoint-flows.md#audio-extraction) |
+| `/transcribe` | POST | AI-powered transcription with multi-provider support | `app/routers/transcription.py` | [Usage](endpoints-usage.md#6-ai-transcription-endpoint), [Flow](endpoint-flows.md#ai-transcription) |
 
 **Workflow**: `/extract-audio` → `/transcribe` → Get JSON/SRT/VTT/Text transcription
 
@@ -54,7 +54,7 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/playlist/info` | GET | Extract playlist metadata without downloading videos | `main.py:~520` | [Usage](endpoints-usage.md#5-get-playlist-information-endpoint) |
+| `/playlist/info` | GET | Extract playlist metadata without downloading videos | `app/routers/playlist.py` | [Usage](endpoints-usage.md#5-get-playlist-information-endpoint) |
 
 ---
 
@@ -62,7 +62,7 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/screenshot/video` | POST | Extract screenshots from video at specified timestamps | `main.py:~2130` | [Usage](endpoints-usage.md#10-screenshot-extraction-endpoint) |
+| `/screenshot/video` | POST | Extract screenshots from video at specified timestamps | `app/routers/screenshot.py` | [Usage](endpoints-usage.md#10-screenshot-extraction-endpoint) |
 
 ---
 
@@ -70,8 +70,8 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/cache` | GET | List all cached files with metadata | `main.py:~2083` | [Usage](endpoints-usage.md#11-cache-management-endpoints) |
-| `/cache/cleanup` | DELETE | Delete all cached files older than TTL | `main.py:~2064` | [Usage](endpoints-usage.md#11-cache-management-endpoints) |
+| `/cache` | GET | List all cached files with metadata | `app/routers/cache.py` | [Usage](endpoints-usage.md#11-cache-management-endpoints) |
+| `/cache/cleanup` | DELETE | Delete all cached files older than TTL | `app/routers/cache.py` | [Usage](endpoints-usage.md#11-cache-management-endpoints) |
 
 ---
 
@@ -79,8 +79,9 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/admin/refresh-cookies` | POST | Manually trigger YouTube cookie refresh | `main.py:2305` | Admin operations |
-| `/admin/cookie-scheduler/status` | GET | Get cookie refresh scheduler status | `main.py:2334` | Admin operations |
+| `/admin/refresh-cookies` | POST | Manually trigger YouTube cookie refresh | `app/routers/admin.py` | Admin operations |
+| `/admin/cookie-scheduler/status` | GET | Get cookie refresh scheduler status | `app/routers/admin.py` | Admin operations |
+| `/admin/transcription-worker/status` | GET | Get transcription worker status | `app/routers/admin.py` | Admin operations |
 
 **Notes**:
 - Cookie refresh runs automatically every `YTDLP_COOKIE_REFRESH_DAYS` (default: 5 days)
@@ -94,8 +95,8 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 
 | Endpoint | Method | Description | Implementation | Documentation |
 |----------|--------|-------------|----------------|---------------|
-| `/transcriptions/save` | POST | Save transcription data to Supabase (UPSERT) | `main.py:~600` | [Usage](endpoints-usage.md#9-supabase-transcription-storage-optional), [Setup](supabase-integration.md) |
-| `/transcriptions/check/{document_id}` | GET | Check if transcription exists for a document | `main.py:~650` | [Usage](endpoints-usage.md#9-supabase-transcription-storage-optional) |
+| `/transcriptions/save` | POST | Save transcription data to Supabase (UPSERT) | `app/routers/transcription.py` | [Usage](endpoints-usage.md#9-supabase-transcription-storage-optional), [Setup](supabase-integration.md) |
+| `/transcriptions/check/{document_id}` | GET | Check if transcription exists for a document | `app/routers/transcription.py` | [Usage](endpoints-usage.md#9-supabase-transcription-storage-optional) |
 
 ---
 
@@ -221,11 +222,43 @@ Error response format:
 
 ## Development Notes
 
-- All endpoint implementations are in `main.py`
-- Line numbers in this index are approximate - search by endpoint path
-- When adding new endpoints, update this index
+### Modular Architecture (as of 2025-12-15)
+
+The codebase has been refactored into a modular structure:
+
+```
+app/
+├── config.py           # Configuration with pydantic-settings
+├── dependencies.py     # API key verification
+├── models/schemas.py   # Pydantic request/response models
+├── routers/            # API endpoint modules
+│   ├── download.py     # /download, /batch-download
+│   ├── subtitles.py    # /subtitles, /transcription/locales
+│   ├── audio.py        # /extract-audio
+│   ├── transcription.py # /transcribe, /transcriptions/*
+│   ├── playlist.py     # /playlist/info
+│   ├── screenshot.py   # /screenshot/video
+│   ├── cache.py        # /cache/*, /downloads/list
+│   └── admin.py        # /admin/*
+├── services/           # Business logic
+│   ├── ytdlp_service.py
+│   ├── cache_service.py
+│   ├── supabase_service.py
+│   ├── transcription_service.py
+│   └── screenshot_service.py
+└── utils/              # Utility functions
+    ├── filename_utils.py
+    ├── timestamp_utils.py
+    ├── subtitle_utils.py
+    ├── language_utils.py
+    └── platform_utils.py
+```
+
+- **main.py**: Minimal entry point (~100 lines) that registers all routers
+- When adding new endpoints, create or update the appropriate router module
 - Keep endpoint-flows.md and endpoints-usage.md in sync with code changes
 - Test endpoints using examples in endpoints-usage.md
+- Run tests with: `pytest tests/ -v`
 
 ---
 
@@ -239,5 +272,5 @@ Error response format:
 
 ---
 
-**Last Updated**: 2025-12-14
+**Last Updated**: 2025-12-15
 **Maintainer**: Update this file when adding/modifying endpoints
