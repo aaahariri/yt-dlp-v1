@@ -21,9 +21,11 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
-2025-12-16 | [FIX] | [RUNPOD] | Fixed whisperX transcription dependencies
-- Added transformers>=4.36.0 and pyannote.audio>=3.1.0 to Dockerfile
-- WhisperX requires transformers.Pipeline which was missing from base install
+2025-12-16 | [FIX] | [RUNPOD] | Fixed whisperX transcription Pipeline import error
+- Removed pyannote.audio from Dockerfile (caused `from transformers import Pipeline` error)
+- pyannote.audio uses old-style import incompatible with transformers>=4.36
+- We don't use speaker diarization, so pyannote.audio not needed
+- Keep transformers>=4.36.0 for whisperX alignment features
 - Files: `Dockerfile`
 - Tags: #fix #runpod #whisperx #dependencies
 
