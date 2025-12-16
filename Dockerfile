@@ -103,7 +103,9 @@ RUN pip install -r requirements.txt
 RUN pip install \
     pydantic-settings \
     apscheduler \
-    playwright
+    playwright \
+    transformers>=4.36.0 \
+    pyannote.audio>=3.1.0
 
 # Install Playwright browsers (for YouTube cookie refresh)
 RUN playwright install chromium || true
