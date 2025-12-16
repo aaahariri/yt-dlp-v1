@@ -71,6 +71,9 @@ def run_ytdlp_binary(args: list, timeout: int = 300, retry_on_auth_failure: bool
     # Add cookies if configured
     if YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
         cmd.extend(['--cookies', YTDLP_COOKIES_FILE])
+        print(f"INFO: Using cookies file: {YTDLP_COOKIES_FILE}")
+    else:
+        print(f"WARNING: Cookies file not found: {YTDLP_COOKIES_FILE} (exists={os.path.exists(YTDLP_COOKIES_FILE) if YTDLP_COOKIES_FILE else 'N/A'})")
 
     try:
         result = subprocess.run(

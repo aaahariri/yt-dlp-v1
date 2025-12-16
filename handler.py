@@ -196,6 +196,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
+    import os
+
     # Log startup
     startup_logger = logging.LoggerAdapter(base_logger, {"request_id": "STARTUP"})
     startup_logger.info("=" * 60)
@@ -209,6 +211,27 @@ if __name__ == "__main__":
         startup_logger.info(f"Max Retries: {settings.worker_max_retries}")
     except Exception as e:
         startup_logger.warning(f"Could not load settings at startup: {e}")
+
+    # Check yt-dlp binary
+    ytdlp_binary = os.environ.get("YTDLP_BINARY", "./bin/yt-dlp")
+    if os.path.exists(ytdlp_binary):
+        startup_logger.info(f"yt-dlp binary: {ytdlp_binary} (EXISTS)")
+    else:
+        startup_logger.warning(f"yt-dlp binary: {ytdlp_binary} (NOT FOUND)")
+
+    # Check cookies file
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "./cookies.txt")
+    startup_logger.info(f"Cookies path: {cookies_file}")
+    if os.path.exists(cookies_file):
+        file_size = os.path.getsize(cookies_file)
+        startup_logger.info(f"Cookies file: EXISTS ({file_size} bytes)")
+    else:
+        startup_logger.warning(f"Cookies file: NOT FOUND at {cookies_file}")
+        # List directory to help debug
+        cookies_dir = os.path.dirname(cookies_file) or "."
+        if os.path.exists(cookies_dir):
+            files = os.listdir(cookies_dir)
+            startup_logger.info(f"Files in {cookies_dir}: {files[:20]}")  # First 20 files
 
     startup_logger.info("Handler ready, waiting for jobs...")
     startup_logger.info("=" * 60)
