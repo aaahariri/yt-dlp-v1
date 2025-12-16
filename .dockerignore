@@ -50,8 +50,7 @@ transcriptions/
 # Local binaries (Linux binaries are downloaded in Dockerfile)
 bin/
 
-# Cookie files (mount these as volumes or secrets)
-cookies.txt
+# Cookie state files (cookies.txt is needed for YouTube auth)
 cookies_state.json
 
 # Deployment configs for other platforms

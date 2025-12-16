@@ -216,8 +216,7 @@ __marimo__/
 *.wmv
 
 # Cookie files and browser state (security sensitive)
-*cookies*.txt
+# NOTE: cookies.txt is intentionally NOT ignored - needed for RunPod deployment
 *cookies*.json
 *_state.json
-cookies.txt
 session.json
