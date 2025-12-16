@@ -394,6 +394,9 @@ class TestRunPodE2E:
 
                     if status == 'COMPLETED':
                         print("RunPod job completed!")
+                        # Print the job output for debugging
+                        output = runpod_status.get('output', {})
+                        print(f"RunPod output: {output}")
                         break
                     elif status == 'FAILED':
                         error = runpod_status.get('error', 'Unknown error')

@@ -47,6 +47,9 @@ cache/
 downloads/
 transcriptions/
 
+# Local binaries (Linux binaries are downloaded in Dockerfile)
+bin/
+
 # Cookie files (mount these as volumes or secrets)
 cookies.txt
 cookies_state.json
