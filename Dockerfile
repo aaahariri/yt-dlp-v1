@@ -100,12 +100,12 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Install additional dependencies for RunPod
+# Note: pyannote.audio removed - causes Pipeline import error and we don't use diarization
 RUN pip install \
     pydantic-settings \
     apscheduler \
     playwright \
-    transformers>=4.36.0 \
-    pyannote.audio>=3.1.0
+    transformers>=4.36.0
 
 # Install Playwright browsers (for YouTube cookie refresh)
 RUN playwright install chromium || true
