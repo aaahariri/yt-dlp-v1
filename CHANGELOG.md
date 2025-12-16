@@ -21,6 +21,19 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-16 | [FIX] | [RUNPOD] | Fixed whisperX transcription dependencies
+- Added transformers>=4.36.0 and pyannote.audio>=3.1.0 to Dockerfile
+- WhisperX requires transformers.Pipeline which was missing from base install
+- Files: `Dockerfile`
+- Tags: #fix #runpod #whisperx #dependencies
+
+2025-12-16 | [FIX] | [RUNPOD] | Added YouTube cookies for authentication
+- Exported authenticated YouTube cookies via Playwright
+- Removed cookies.txt from .gitignore and .dockerignore for deployment
+- Added startup/runtime logging for cookies file debugging
+- Files: `cookies.txt`, `.gitignore`, `.dockerignore`, `handler.py`, `app/services/ytdlp_service.py`
+- Tags: #fix #runpod #youtube #cookies #authentication
+
 2025-12-16 | [FIX] | [RUNPOD] | Fixed async handler and yt-dlp binary architecture issues
 - Fixed async handler: RunPod doesn't properly await async handlers (GitHub #387)
 - Added run_async() helper for safe event loop handling in any context
