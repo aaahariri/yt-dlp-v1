@@ -100,12 +100,15 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Install additional dependencies for RunPod
-# Note: pyannote.audio removed - causes Pipeline import error and we don't use diarization
 RUN pip install \
     pydantic-settings \
     apscheduler \
-    playwright \
-    transformers>=4.36.0
+    playwright
+
+# Force remove pyannote packages that cause Pipeline import errors
+# whisperX installs these as optional deps but we don't use diarization
+# pyannote uses old-style `from transformers import Pipeline` which fails in transformers>=4.36
+RUN pip uninstall -y pyannote.audio pyannote.core pyannote.pipeline pyannote.database 2>/dev/null || true
 
 # Install Playwright browsers (for YouTube cookie refresh)
 RUN playwright install chromium || true
