@@ -21,6 +21,14 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-16 | [FIX] | [RUNPOD] | Fixed async handler and yt-dlp binary architecture issues
+- Fixed async handler: RunPod doesn't properly await async handlers (GitHub #387)
+- Added run_async() helper for safe event loop handling in any context
+- Added bin/ to .dockerignore to prevent macOS yt-dlp binary overwriting Linux binary
+- Added E2E integration test: tests/integration/test_runpod_e2e.py
+- Files: `handler.py`, `.dockerignore`, `tests/integration/test_runpod_e2e.py`
+- Tags: #fix #runpod #async #docker #testing
+
 2025-12-16 | [FEATURE] | [RUNPOD] | RunPod serverless handler for async transcription processing
 - Added handler.py: Thin orchestration layer (~85 lines) that receives RunPod jobs
 - Handler delegates to existing job_service.py process_job_batch() - zero code duplication
