@@ -9,74 +9,18 @@ so there's no need to return results to the caller - they can check the
 database for status updates.
 """
 import runpod
-import asyncio
-import logging
+import os
 from typing import Dict, Any
+
+# Import from modular utilities
+from app.utils.logging_utils import setup_logger, get_job_logger
+from app.utils.async_utils import run_async
+
+# Import services
 from app.services.job_service import process_job_batch
+from app.services.screenshot_job_service import process_screenshot_job_batch
+from app.services.cache_service import check_video_cache_status
 from app.config import get_settings
-
-
-# =============================================================================
-# Logging Setup
-# =============================================================================
-def setup_logger(log_level=logging.INFO):
-    """
-    Configure logger for RunPod serverless environment.
-
-    RunPod captures stdout/stderr and displays in the console.
-    Using Python's logging module provides better formatting and control.
-    """
-    log_format = logging.Formatter(
-        '%(asctime)s | %(levelname)s | [%(request_id)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-    logger = logging.getLogger("runpod_handler")
-    logger.setLevel(log_level)
-
-    # Console handler (captured by RunPod)
-    if not logger.handlers:
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_format)
-        logger.addHandler(console_handler)
-
-    return logger
-
-
-# Initialize logger at module level
-base_logger = setup_logger()
-
-
-def get_job_logger(job_id: str):
-    """Create a logger adapter with the job/request ID for tracing."""
-    return logging.LoggerAdapter(base_logger, {"request_id": job_id})
-
-
-# =============================================================================
-# Async Helper
-# =============================================================================
-def run_async(coro):
-    """
-    Run an async coroutine safely, handling existing event loops.
-
-    RunPod's async handler support has known issues (GitHub #387), so we use
-    a sync handler and manage the event loop ourselves.
-    """
-    try:
-        # Try to get existing loop
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # We're in an async context - create new loop in thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        else:
-            # No running loop - use it directly
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        # No event loop exists - create one
-        return asyncio.run(coro)
 
 
 # =============================================================================
@@ -115,22 +59,25 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("=" * 60)
 
     job_input = job.get("input", {})
+    queue = job_input.get("queue", "video_audio_transcription")
 
-    # Validate input structure
-    jobs = job_input.get("jobs", [])
-    if not jobs or not isinstance(jobs, list):
-        logger.warning("Invalid or empty jobs list received")
-        return {
-            "ok": False,
-            "error": "Invalid or empty jobs list",
-            "summary": {"total": 0, "completed": 0, "retry": 0, "archived": 0, "deleted": 0}
-        }
+    # Validate input structure (skip for check_video_cache which doesn't use jobs array)
+    if queue != "check_video_cache":
+        jobs = job_input.get("jobs", [])
+        if not jobs or not isinstance(jobs, list):
+            logger.warning("Invalid or empty jobs list received")
+            return {
+                "ok": False,
+                "error": "Invalid or empty jobs list",
+                "summary": {"total": 0, "completed": 0, "retry": 0, "archived": 0, "deleted": 0}
+            }
 
-    # Log job details
-    document_ids = [j.get("document_id", "?")[:8] for j in jobs]
-    logger.info(f"Jobs to process: {len(jobs)}")
-    logger.info(f"Document IDs: {document_ids}")
-    logger.info(f"Queue: {job_input.get('queue', 'default')}")
+        # Log job details
+        document_ids = [j.get("document_id", "?")[:8] for j in jobs]
+        logger.info(f"Jobs to process: {len(jobs)}")
+        logger.info(f"Document IDs: {document_ids}")
+
+    logger.info(f"Queue: {queue}")
 
     # Load settings with error handling
     try:
@@ -138,10 +85,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Model: {settings.worker_model_size}, Provider: {settings.worker_provider}")
     except Exception as e:
         logger.error(f"Configuration error: {str(e)}")
+        job_count = len(jobs) if queue != "check_video_cache" else 0
         return {
             "ok": False,
             "error": f"Configuration error: {str(e)}",
-            "summary": {"total": len(jobs), "completed": 0, "retry": 0, "archived": 0, "deleted": 0}
+            "summary": {"total": job_count, "completed": 0, "retry": 0, "archived": 0, "deleted": 0}
         }
 
     # Process jobs using run_async helper for safe event loop handling
@@ -149,15 +97,56 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("STARTING JOB PROCESSING")
     logger.info("-" * 40)
 
+    # Route by queue name
+    queue = job_input.get("queue", "video_audio_transcription")
+    logger.info(f"Routing to queue: {queue}")
+
     try:
-        result = run_async(
-            process_job_batch(
-                payload=job_input,
-                max_retries=settings.worker_max_retries,
-                model_size=settings.worker_model_size,
-                provider=settings.worker_provider
+        if queue == "check_video_cache":
+            # Video cache check - lightweight, synchronous
+            video_url = job_input.get("video_url")
+
+            if not video_url:
+                logger.error("Missing video_url in check_video_cache request")
+                return {
+                    "ok": False,
+                    "error": "Missing required field: video_url"
+                }
+
+            logger.info(f"Checking cache for video: {video_url}")
+            cache_result = check_video_cache_status(video_url, logger)
+
+            return {
+                "ok": True,
+                **cache_result
+            }
+
+        elif queue == "screenshot_extraction":
+            # Screenshot extraction jobs
+            result = run_async(
+                process_screenshot_job_batch(
+                    payload=job_input,
+                    max_retries=settings.worker_max_retries
+                )
             )
-        )
+        elif queue == "video_audio_transcription":
+            # Transcription jobs (existing)
+            result = run_async(
+                process_job_batch(
+                    payload=job_input,
+                    max_retries=settings.worker_max_retries,
+                    model_size=settings.worker_model_size,
+                    provider=settings.worker_provider
+                )
+            )
+        else:
+            # Unknown queue
+            logger.error(f"Unknown queue: {queue}")
+            return {
+                "ok": False,
+                "error": f"Unknown queue: {queue}. Supported: video_audio_transcription, screenshot_extraction, check_video_cache",
+                "summary": {"total": len(jobs), "completed": 0, "failed": len(jobs)}
+            }
 
         # Log summary
         summary = result.get("summary", {})
@@ -180,26 +169,41 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.exception("Full traceback:")
         logger.info("=" * 60)
 
+        # For check_video_cache, return simple error without summary
+        if queue == "check_video_cache":
+            return {
+                "ok": False,
+                "error": error_msg,
+                "cached": False,
+                "cache_path": None,
+                "cache_age_seconds": None,
+                "expires_in_seconds": None
+            }
+
+        # For batch jobs, return summary
+        job_count = len(jobs) if queue != "check_video_cache" else 0
         return {
             "ok": False,
             "error": error_msg,
             "summary": {
-                "total": len(jobs),
+                "total": job_count,
                 "completed": 0,
                 "retry": 0,
                 "archived": 0,
                 "deleted": 0,
-                "failed": len(jobs)
+                "failed": job_count
             },
             "results": []
         }
 
 
-if __name__ == "__main__":
-    import os
+# Initialize logger at module level
+base_logger = setup_logger()
 
+
+if __name__ == "__main__":
     # Log startup
-    startup_logger = logging.LoggerAdapter(base_logger, {"request_id": "STARTUP"})
+    startup_logger = get_job_logger("STARTUP", base_logger)
     startup_logger.info("=" * 60)
     startup_logger.info("RunPod Handler Starting")
     startup_logger.info("=" * 60)

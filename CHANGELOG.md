@@ -21,6 +21,40 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2025-12-22 | [REFACTOR] | [HANDLER] | Modularized handler.py into reusable utilities and services
+- Extracted logging setup into `app/utils/logging_utils.py` (setup_logger, get_job_logger)
+- Extracted async helper into `app/utils/async_utils.py` (run_async for RunPod event loop handling)
+- Moved check_video_cache to `app/services/cache_service.py` as check_video_cache_status()
+- Reduced handler.py from 396 → 244 lines (-38%), now pure orchestration layer
+- Added comprehensive Services & Utilities Index to docs/docs-home.md
+- Files: `handler.py`, `app/utils/logging_utils.py`, `app/utils/async_utils.py`, `app/services/cache_service.py`, `docs/docs-home.md`
+- Tags: #refactor #handler #modular #utilities #documentation
+
+2025-12-18 | [FEATURE] | [RUNPOD] | Screenshot Jobs System for async batch screenshot extraction
+- Added screenshot_job_service.py for processing screenshot extraction via RunPod
+- Extended handler.py with queue routing: `screenshot_extraction` queue alongside existing `video_audio_transcription`
+- Added `save_screenshot_with_job_metadata()` to supabase_service.py for job tracking
+- Screenshots saved to Supabase with job metadata (job_id, storage_status, timestamps, worker)
+- Job results can be queried directly from Supabase using `get_screenshots_by_job_id()`
+- Added Supabase SQL migration with indexes and functions for job tracking
+- Created cleanup-temp-screenshots Edge Function for TTL-based cleanup (48h default)
+- Added input validation (max 100 timestamps, quality 1-31), file size validation, error handling
+- Files: `app/services/screenshot_job_service.py`, `app/services/supabase_service.py`, `handler.py`, `supabase/migrations/20251218_screenshot_jobs.sql`, `supabase/functions/cleanup-temp-screenshots/index.ts`, `docs/endpoints-index.md`
+- Tags: #feature #runpod #screenshots #supabase #jobs #async
+
+2025-12-18 | [DOCS] | [OPS] | Added n8n Operations Guide with CURL examples
+- Created Guide-n8n-Operations.md with comprehensive CURL and n8n workflow examples
+- Covers screenshot extraction, transcription jobs, and all Supabase RPC functions
+- Includes polling strategy, complete workflow diagram, and quick reference table
+- Files: `Guide-n8n-Operations.md`
+- Tags: #docs #n8n #operations #curl
+
+2025-12-18 | [DEPLOY] | [SUPABASE] | Deployed cleanup-temp-screenshots Edge Function
+- Deployed Edge Function to Supabase (v1) for automated temp screenshot cleanup
+- SQL migration 20251218_screenshot_jobs.sql confirmed applied (Local & Remote)
+- Functions deployed: `get_screenshots_by_job_id`, `confirm_screenshots`, `get_expired_temp_screenshots`
+- Tags: #deploy #supabase #edge-function
+
 2025-12-16 | [FIX] | [RUNPOD] | Fixed whisperX transcription Pipeline import error
 - Removed pyannote.audio from Dockerfile (caused `from transformers import Pipeline` error)
 - pyannote.audio uses old-style import incompatible with transformers>=4.36

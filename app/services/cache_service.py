@@ -3,17 +3,20 @@ Cache service module for managing temporary files.
 
 This module provides utilities for:
 - Finding cached videos by video_id
+- Checking video cache status with expiration details
 - Cleaning up expired cache files
 - Managing transcription file cleanup
 """
 
 import os
 import time
-from typing import Optional, Dict
+import subprocess
+from typing import Optional, Dict, Any
 from app.config import (
     CACHE_DIR,
     CACHE_TTL_HOURS,
-    TRANSCRIPTIONS_DIR
+    TRANSCRIPTIONS_DIR,
+    YTDLP_BINARY
 )
 
 
@@ -46,6 +49,102 @@ def get_cached_video(video_id: str) -> Optional[str]:
             if age_hours < CACHE_TTL_HOURS:
                 return filepath  # Fresh, reuse it
     return None
+
+
+def check_video_cache_status(video_url: str, logger) -> Dict[str, Any]:
+    """
+    Check if a video is cached and provide detailed cache status.
+
+    Extracts the video ID from the URL using yt-dlp, checks if the video
+    is in the cache, and calculates cache age and expiration time.
+
+    Args:
+        video_url: URL of the video to check
+        logger: Logger instance for tracking
+
+    Returns:
+        Dictionary with cache status containing:
+        - cached: bool - whether video is in cache
+        - cache_path: str|None - path to cached file if cached
+        - cache_age_seconds: int|None - age of cache file in seconds
+        - expires_in_seconds: int|None - seconds until cache expires
+        - video_id: str|None - extracted video ID
+        - error: str|None - error message if extraction failed
+    """
+    try:
+        logger.info(f"Extracting video ID from URL: {video_url}")
+
+        result = subprocess.run(
+            [YTDLP_BINARY, '--get-id', video_url],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Failed to extract video ID: {result.stderr}")
+            return {
+                "cached": False,
+                "cache_path": None,
+                "cache_age_seconds": None,
+                "expires_in_seconds": None,
+                "video_id": None,
+                "error": f"Failed to extract video ID: {result.stderr.strip()}"
+            }
+
+        video_id = result.stdout.strip()
+        logger.info(f"Video ID extracted: {video_id}")
+
+        cached_path = get_cached_video(video_id)
+
+        if cached_path:
+            cache_mtime = os.path.getmtime(cached_path)
+            cache_age_seconds = int(time.time() - cache_mtime)
+            cache_ttl_seconds = CACHE_TTL_HOURS * 3600
+            expires_in_seconds = cache_ttl_seconds - cache_age_seconds
+
+            logger.info(f"Video CACHED at {cached_path}")
+            logger.info(f"Cache age: {cache_age_seconds}s, expires in: {expires_in_seconds}s")
+
+            return {
+                "cached": True,
+                "cache_path": cached_path,
+                "cache_age_seconds": cache_age_seconds,
+                "expires_in_seconds": expires_in_seconds,
+                "video_id": video_id,
+                "error": None
+            }
+        else:
+            logger.info(f"Video NOT cached (video_id: {video_id})")
+            return {
+                "cached": False,
+                "cache_path": None,
+                "cache_age_seconds": None,
+                "expires_in_seconds": None,
+                "video_id": video_id,
+                "error": None
+            }
+
+    except subprocess.TimeoutExpired:
+        logger.error("Video ID extraction timed out")
+        return {
+            "cached": False,
+            "cache_path": None,
+            "cache_age_seconds": None,
+            "expires_in_seconds": None,
+            "video_id": None,
+            "error": "Video ID extraction timed out"
+        }
+    except Exception as e:
+        logger.error(f"Cache check error: {str(e)}")
+        return {
+            "cached": False,
+            "cache_path": None,
+            "cache_age_seconds": None,
+            "expires_in_seconds": None,
+            "video_id": None,
+            "error": str(e)
+        }
 
 
 def cleanup_cache() -> Dict[str, int]:

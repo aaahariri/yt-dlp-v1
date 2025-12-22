@@ -141,3 +141,52 @@ def save_screenshot_metadata(data: Dict) -> Optional[Dict]:
     supabase = get_supabase_client()
     result = supabase.table("public_media").insert(data).execute()
     return result.data[0] if result.data else None
+
+
+def save_screenshot_with_job_metadata(
+    base_data: Dict,
+    job_metadata: Dict
+) -> Optional[Dict]:
+    """
+    Save screenshot to public_media with job tracking in metadata.
+
+    This is used by the screenshot job service to include job tracking fields
+    in the metadata JSONB field.
+
+    Args:
+        base_data: Base screenshot data dict with type, storage_path, etc.
+        job_metadata: Job tracking fields to merge into metadata:
+            - job_id: UUID string
+            - storage_status: "temp" or "confirmed"
+            - job_received_at: ISO timestamp
+            - job_completed_at: ISO timestamp
+            - worker: "runpod", "local", etc.
+
+    Returns:
+        Inserted row data as dictionary, or None if insertion failed
+
+    Example:
+        >>> base_data = {
+        ...     "type": "screenshot",
+        ...     "storage_path": "screenshots/xyz/1000.jpg",
+        ...     "metadata": {"video_id": "xyz", "timestamp": 1.0}
+        ... }
+        >>> job_metadata = {
+        ...     "job_id": "abc-123",
+        ...     "storage_status": "temp",
+        ...     "worker": "runpod"
+        ... }
+        >>> result = save_screenshot_with_job_metadata(base_data, job_metadata)
+    """
+    supabase = get_supabase_client()
+
+    # Merge job_metadata into the existing metadata field
+    data = base_data.copy()
+    existing_metadata = data.get("metadata", {})
+    if existing_metadata is None:
+        existing_metadata = {}
+    existing_metadata.update(job_metadata)
+    data["metadata"] = existing_metadata
+
+    result = supabase.table("public_media").insert(data).execute()
+    return result.data[0] if result.data else None

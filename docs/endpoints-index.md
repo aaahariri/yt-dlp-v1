@@ -112,14 +112,99 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 |----------|--------|-------------|----------------|---------------|
 | RunPod `/run` | POST | Async job submission to RunPod serverless | `handler.py` | [Usage](endpoints-usage.md#13-runpod-serverless-endpoint), [Deployment](runpod-deployment.md) |
 | RunPod `/runsync` | POST | Synchronous job execution (waits for result) | `handler.py` | [Usage](endpoints-usage.md#13-runpod-serverless-endpoint) |
-| RunPod `/status/{job_id}` | GET | Check status of submitted job | RunPod API | [Usage](endpoints-usage.md#13-runpod-serverless-endpoint) |
+| RunPod `/status/{job_id}` | GET | Check job status and retrieve output when complete | RunPod API | [Usage](endpoints-usage.md#14-runpod-job-status-endpoint) |
+| RunPod `/cancel/{job_id}` | POST | Cancel a queued or running job | RunPod API | [Usage](endpoints-usage.md#14-runpod-job-status-endpoint) |
 
 **Notes**:
-- **handler.py** is a thin orchestration layer that delegates to existing `job_service.py`
+- **handler.py** is a thin orchestration layer that delegates to existing `job_service.py` and `screenshot_job_service.py`
 - Receives jobs via RunPod's serverless infrastructure, not direct HTTP calls
 - Supabase Edge Function calls RunPod `/run` which returns immediately
 - Results are saved directly to Supabase database (no polling needed)
 - See [RunPod Deployment Guide](runpod-deployment.md) for setup instructions
+
+### RunPod Job Status Values (External API)
+
+The `/status/{job_id}` endpoint returns these status values (provided by RunPod infrastructure):
+
+| Status | Description | Output Available |
+|--------|-------------|------------------|
+| `IN_QUEUE` | Job received, waiting for worker | No |
+| `IN_PROGRESS` | Worker is actively processing | No |
+| `COMPLETED` | Job finished successfully | **Yes** - full results in `output` field |
+| `FAILED` | Job encountered an error | Yes - error details in `output` |
+| `CANCELLED` | Job was manually cancelled | No |
+| `TIMED_OUT` | Job exceeded timeout limit | Yes - error details |
+
+**Important**: When `status` is `COMPLETED`, the response includes the complete `output` field with all job results - no need to query Supabase separately if you prefer polling.
+
+### Screenshot Jobs (RunPod Queue)
+
+The `handler.py` supports a second queue type: `screenshot_extraction` for batch screenshot extraction jobs.
+
+**Payload Format**:
+```json
+{
+  "input": {
+    "queue": "screenshot_extraction",
+    "jobs": [{
+      "video_url": "https://youtube.com/watch?v=...",
+      "timestamps": ["00:00:30,000", "00:01:00,000"],
+      "quality": 2,
+      "document_id": "optional-uuid"
+    }]
+  }
+}
+```
+
+**Response**:
+- Each job returns a `job_id` (UUID) in the results
+- Screenshots are stored to Supabase `public_media` table with job tracking metadata
+- Query results directly from Supabase: `SELECT * FROM get_screenshots_by_job_id('job-uuid')`
+
+**Job Metadata in public_media**:
+- `job_id`: UUID to group screenshots from same batch
+- `storage_status`: "temp" (can be confirmed later via `confirm_screenshots`)
+- `job_received_at`, `job_completed_at`: Processing timestamps
+- `worker`: Worker name (e.g., "runpod")
+
+**Supabase Functions Added**:
+- `get_screenshots_by_job_id(p_job_id TEXT)` - Get all screenshots for a job
+- `confirm_screenshots(p_ids UUID[])` - Mark screenshots as confirmed (temp → confirmed)
+- `get_expired_temp_screenshots(hours_old INTEGER)` - Preview expired temp screenshots for cleanup
+
+**Supabase Edge Function**:
+- `cleanup-temp-screenshots` - Deletes expired temp screenshots from storage and database
+
+**Implementation Files**:
+- Service: `app/services/screenshot_job_service.py`
+- SQL Migration: `supabase/migrations/20251218_screenshot_jobs.sql`
+- Handler: `handler.py` (queue routing logic)
+
+### Cache Check (RunPod Queue)
+
+The `handler.py` supports checking if a video is cached before requesting additional screenshots.
+
+**Payload Format**:
+```json
+{
+  "input": {
+    "queue": "check_video_cache",
+    "video_url": "https://youtube.com/watch?v=..."
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "cached": true,
+  "cache_path": "/tmp/videos/abc123.mp4",
+  "cache_age_seconds": 300,
+  "expires_in_seconds": 1500
+}
+```
+
+**Use Case**: Check if video is still cached before requesting additional screenshots. If cached, use `/runsync` for faster response. If not cached, use `/run` (async) since video needs re-download.
 
 ---
 
@@ -304,5 +389,5 @@ app/
 
 ---
 
-**Last Updated**: 2025-12-16
+**Last Updated**: 2025-12-18
 **Maintainer**: Update this file when adding/modifying endpoints

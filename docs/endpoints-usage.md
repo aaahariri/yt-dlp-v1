@@ -2502,6 +2502,225 @@ curl -X POST http://localhost:8000/runsync \
 
 ---
 
+## 14. RunPod Job Status Endpoint (External API)
+
+### `GET https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}`
+
+**Description**: Check the status of any RunPod job and retrieve the full output when complete. This is an external RunPod API endpoint (not part of our codebase) that works with all queue types (`video_audio_transcription`, `screenshot_extraction`).
+
+**Authentication**: RunPod API Key via `Authorization: Bearer` header
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `endpoint_id` | string (path) | Yes | Your RunPod endpoint ID |
+| `job_id` | string (path) | Yes | Job ID returned from `/run` submission |
+
+### Example Request
+
+```bash
+curl "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/status/${JOB_ID}" \
+  -H "Authorization: Bearer ${RUNPOD_API_KEY}"
+```
+
+### Job Status Values
+
+RunPod returns these status values (provided by RunPod infrastructure):
+
+| Status | Description | `output` Field |
+|--------|-------------|----------------|
+| `IN_QUEUE` | Job received, waiting for available worker | Not present |
+| `IN_PROGRESS` | Worker is actively processing the job | Not present |
+| `COMPLETED` | Job finished successfully | **Contains full results** |
+| `FAILED` | Job encountered an error during execution | Contains error details |
+| `CANCELLED` | Job was manually cancelled via `/cancel` | Not present |
+| `TIMED_OUT` | Job exceeded timeout limit | Contains error details |
+
+### Response Examples
+
+**While processing (IN_QUEUE or IN_PROGRESS):**
+```json
+{
+  "id": "abc123-runpod-job-id",
+  "status": "IN_PROGRESS"
+}
+```
+
+**When completed (screenshot job):**
+```json
+{
+  "id": "abc123-runpod-job-id",
+  "status": "COMPLETED",
+  "output": {
+    "ok": true,
+    "summary": {"total": 1, "completed": 1, "failed": 0},
+    "results": [
+      {
+        "job_id": "550e8400-e29b-41d4-a716-446655440000",
+        "status": "completed",
+        "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "total_extracted": 3,
+        "failed_timestamps": []
+      }
+    ]
+  }
+}
+```
+
+**When completed (transcription job):**
+```json
+{
+  "id": "abc123-runpod-job-id",
+  "status": "COMPLETED",
+  "output": {
+    "ok": true,
+    "summary": {"total": 1, "completed": 1, "retry": 0, "archived": 0, "deleted": 0},
+    "results": [
+      {
+        "msg_id": 1,
+        "status": "completed",
+        "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca",
+        "word_count": 1234,
+        "segment_count": 45
+      }
+    ]
+  }
+}
+```
+
+**When failed:**
+```json
+{
+  "id": "abc123-runpod-job-id",
+  "status": "FAILED",
+  "output": {
+    "ok": false,
+    "error": "Handler processing error: Video download failed",
+    "summary": {"total": 1, "completed": 0, "failed": 1}
+  }
+}
+```
+
+### Two Approaches for Getting Results
+
+After submitting a job via `/run`, you have two options:
+
+| Approach | Method | Best For |
+|----------|--------|----------|
+| **Poll RunPod Status** | `GET /status/{job_id}` until `COMPLETED`, then read `output` | Simple integrations, immediate results |
+| **Query Supabase Directly** | Query `public_media` or `document_transcriptions` tables | Persistent storage, complex queries, multiple clients |
+
+**Poll-based approach:**
+```bash
+# 1. Submit job
+JOB_ID=$(curl -X POST "https://api.runpod.ai/v2/${ENDPOINT}/run" \
+  -H "Authorization: Bearer ${KEY}" \
+  -d '{"input": {...}}' | jq -r '.id')
+
+# 2. Poll until complete
+while true; do
+  STATUS=$(curl -s "https://api.runpod.ai/v2/${ENDPOINT}/status/${JOB_ID}" \
+    -H "Authorization: Bearer ${KEY}")
+
+  if echo "$STATUS" | jq -e '.status == "COMPLETED"' > /dev/null; then
+    echo "$STATUS" | jq '.output'
+    break
+  fi
+  sleep 5
+done
+```
+
+**Supabase-based approach (for screenshots):**
+```bash
+# After job completes, query Supabase directly using the internal job_id
+curl -X POST "${SUPABASE_URL}/rest/v1/rpc/get_screenshots_by_job_id" \
+  -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+  -H "apikey: ${SUPABASE_ANON_KEY}" \
+  -d '{"p_job_id": "550e8400-e29b-41d4-a716-446655440000"}'
+```
+
+### Job Expiration
+
+- Jobs submitted via `/run` expire **30 minutes** after completion
+- Jobs submitted via `/runsync` expire **1 minute** after completion
+- After expiration, status endpoint returns 404
+
+### Cancel Endpoint
+
+Cancel a queued or in-progress job:
+
+```bash
+curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/cancel/${JOB_ID}" \
+  -H "Authorization: Bearer ${RUNPOD_API_KEY}"
+```
+
+**Response:**
+```json
+{
+  "id": "abc123-runpod-job-id",
+  "status": "CANCELLED"
+}
+```
+
+**Note**: Jobs that are already `COMPLETED` or `FAILED` cannot be cancelled.
+
+---
+
+### Check Video Cache
+
+Check if a video is still cached on the RunPod worker. Use this before requesting additional screenshots to determine whether to use sync (cached) or async (not cached) mode.
+
+**Endpoint**: RunPod `/run` or `/runsync`
+
+**Request**:
+```bash
+curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync" \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "queue": "check_video_cache",
+      "video_url": "https://youtube.com/watch?v=dQw4w9WgXcQ"
+    }
+  }'
+```
+
+**Response (cached)**:
+```json
+{
+  "id": "job-id",
+  "status": "COMPLETED",
+  "output": {
+    "cached": true,
+    "cache_path": "/tmp/videos/abc123.mp4",
+    "cache_age_seconds": 300,
+    "expires_in_seconds": 1500
+  }
+}
+```
+
+**Response (not cached)**:
+```json
+{
+  "id": "job-id",
+  "status": "COMPLETED",
+  "output": {
+    "cached": false,
+    "cache_path": null,
+    "cache_age_seconds": null,
+    "expires_in_seconds": null
+  }
+}
+```
+
+**Workflow**:
+1. Call `check_video_cache` with the video URL
+2. If `cached: true` and `expires_in_seconds > 60`: Use `/runsync` for faster additional screenshot requests
+3. If `cached: false`: Use `/run` (async) since video needs to be re-downloaded
+
+---
+
 ## Related Documentation
 
 - **[runpod-deployment.md](runpod-deployment.md)**: Full deployment guide
