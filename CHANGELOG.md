@@ -21,6 +21,34 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2026-01-02 | [FIX] | [SCREENSHOTS] | Robust timestamp parsing + Supabase bucket fix
+- `parse_timestamp_to_seconds()` now handles dict, numeric, and string inputs (fixes RunPod `'dict' object has no attribute 'strip'` error)
+- Fixed `resolve_media_placeholders()` SQL function: `public_media` bucket is PRIVATE (requires signed URLs), not public
+- Updated documentation to clarify `is_public=false` for `public_media` bucket
+- Files: `app/utils/timestamp_utils.py`, `supabase/migrations/20260112_fix_is_public_bucket_check.sql`, `Supabase-Functions-Usage.md`, `Frontend-Changes.md`
+- Tags: #fix #screenshots #runpod #supabase #timestamp
+
+2025-12-28 | [FEATURE] | [SCREENSHOTS] | Added segment_id tracking to screenshot extraction pipeline
+- RunPod handler now accepts timestamp objects with `segment_id`, `reason`, and `text` fields
+- Screenshot metadata now stores `segment_id`, `extraction_reason`, `segment_text`, `timestamp_seconds`
+- Updated Supabase functions: `get_screenshots_for_review()`, `get_screenshot_candidates_for_segment()`, `get_approved_screenshots_for_document()` to use `segment_id` only
+- Removed `segment_index` backwards compatibility - clean rollout using `segment_id` only
+- Updated n8n workflow guide: AI Agent prompt now outputs `segment_id`, RunPod payload sends full timestamp objects
+- Files: `app/services/screenshot_job_service.py`, `supabase/migrations/20260103_screenshot_functions_clean.sql`, `Guide-n8n-Workflow-GenerateScreenshots-VideoTranscription.md`, `Supabase-Functions-Usage.md`
+- Tags: #feature #screenshots #segment_id #runpod #supabase
+
+2025-12-25 | [FEATURE] | [TRANSCRIPTION] | Added segment_id to transcription segments with word-level timing support
+- Added `segment_id` (1-based integer) to all transcription segment outputs for stable targeting
+- Subtitles router now prefers YouTube json3 format for word-level timing data
+- Added json3 parser that extracts word-level timestamps with `words` array
+- WhisperX transcription now includes segment_id on all segments
+- OpenAI transcription now requests word timestamps and preserves `words` array
+- Job service includes fallback to ensure segment_id exists before Supabase save
+- Created Supabase SQL functions: `get_segment_by_transcription_id()`, `get_segment_by_document_id()`
+- Added 9 unit tests for segment_id functionality
+- Files: `app/routers/subtitles.py`, `app/services/transcription_service.py`, `app/services/job_service.py`, `supabase/migrations/20251225_segment_retrieval_functions.sql`, `tests/unit/test_segment_id.py`
+- Tags: #feature #transcription #segments #json3 #word-timing #supabase
+
 2025-12-22 | [REFACTOR] | [HANDLER] | Modularized handler.py into reusable utilities and services
 - Extracted logging setup into `app/utils/logging_utils.py` (setup_logger, get_job_logger)
 - Extracted async helper into `app/utils/async_utils.py` (run_async for RunPod event loop handling)

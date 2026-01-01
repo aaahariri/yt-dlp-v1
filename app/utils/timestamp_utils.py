@@ -8,25 +8,47 @@ This module provides utilities for:
 """
 
 
-def parse_timestamp_to_seconds(timestamp: str) -> float:
+def parse_timestamp_to_seconds(timestamp) -> float:
     """
     Auto-detect and parse timestamp to seconds.
-    Supports: SRT "00:01:30,500" or float "90.5"
+    Supports:
+    - SRT format: "00:01:30,500"
+    - String float: "90.5"
+    - Numeric: 90.5 or 90
+    - Dict with timestamp field: {"screenshot_timestamp": 90.5, ...}
     """
-    timestamp = timestamp.strip()
+    # Handle dict input - extract timestamp value
+    if isinstance(timestamp, dict):
+        timestamp = (
+            timestamp.get("screenshot_timestamp") or
+            timestamp.get("timestamp") or
+            timestamp.get("start")
+        )
+        if timestamp is None:
+            raise ValueError("Dict missing timestamp field (screenshot_timestamp, timestamp, or start)")
 
-    # Try SRT/VTT format: HH:MM:SS,mmm or HH:MM:SS.mmm
-    if ':' in timestamp:
-        timestamp = timestamp.replace(',', '.')
-        parts = timestamp.split(':')
-        if len(parts) == 3:
-            hours = int(parts[0])
-            minutes = int(parts[1])
-            seconds = float(parts[2])
-            return hours * 3600 + minutes * 60 + seconds
+    # Handle numeric input directly
+    if isinstance(timestamp, (int, float)):
+        return float(timestamp)
 
-    # Try float seconds
-    return float(timestamp)
+    # Handle string input
+    if isinstance(timestamp, str):
+        timestamp = timestamp.strip()
+
+        # Try SRT/VTT format: HH:MM:SS,mmm or HH:MM:SS.mmm
+        if ':' in timestamp:
+            timestamp = timestamp.replace(',', '.')
+            parts = timestamp.split(':')
+            if len(parts) == 3:
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600 + minutes * 60 + seconds
+
+        # Try float seconds
+        return float(timestamp)
+
+    raise TypeError(f"Cannot parse timestamp of type {type(timestamp).__name__}: {timestamp}")
 
 def format_seconds_to_srt(seconds: float) -> str:
     """Convert seconds to SRT timestamp format: HH:MM:SS,mmm"""
