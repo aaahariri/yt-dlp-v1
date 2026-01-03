@@ -16,7 +16,8 @@ Expected payload:
             "read_ct": 1,
             "enqueued_at": "2025-12-15T16:42:03.680992+00:00",
             "document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca",
-            "message": {"document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca"}
+            "message": {"document_id": "b5e4b7d1-bab4-49e3-b8bc-66a320bdb4ca"},
+            "skip_subtitles": false  // Optional: Force AI transcription (default: false)
         }
     ]
 }
@@ -49,6 +50,10 @@ class Job(BaseModel):
     enqueued_at: Optional[str] = None
     document_id: Optional[str] = None
     message: Optional[JobMessage] = None
+    skip_subtitles: Optional[bool] = Field(
+        default=False,
+        description="Skip platform subtitle extraction and force AI transcription"
+    )
 
 
 class JobBatchPayload(BaseModel):
@@ -127,7 +132,8 @@ async def handle_video_audio_transcription_jobs(
         job_dict = {
             "msg_id": job.msg_id,
             "read_ct": job.read_ct,
-            "document_id": job.document_id or (job.message.document_id if job.message else None)
+            "document_id": job.document_id or (job.message.document_id if job.message else None),
+            "skip_subtitles": job.skip_subtitles  # Pass flag to service layer
         }
         if job.message:
             job_dict["message"] = {"document_id": job.message.document_id}

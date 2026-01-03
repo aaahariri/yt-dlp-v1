@@ -98,11 +98,39 @@ Quick reference guide to all available endpoints in the Social Media Video Downl
 | `/jobs/video-audio-transcription` | POST | Process transcription jobs from Supabase PGMQ queue | `app/routers/jobs.py` | [Usage](endpoints-usage.md#12-job-queue-processing-endpoint) |
 | `/jobs/status` | GET | Health check for jobs endpoint with config info | `app/routers/jobs.py` | [Usage](endpoints-usage.md#12-job-queue-processing-endpoint) |
 
+**Transcription Flow** (implemented in `app/services/job_service.py`):
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Job Processing Pipeline                          │
+├─────────────────────────────────────────────────────────────────────┤
+│  1. Claim document (pending → processing)                           │
+│  2. Validate document data (URL, media_format)                      │
+│  3. Try platform subtitles first (YouTube, Vimeo, etc.)            │
+│     ├── Found? → Use subtitles (faster, free, often higher quality)│
+│     └── Not found? → Continue to AI transcription                   │
+│  4. Extract audio from URL (only if no subtitles)                   │
+│  5. Transcribe with WhisperX/OpenAI (only if no subtitles)         │
+│  6. Save to document_transcriptions (source: "subtitle" or "ai")    │
+│  7. Mark document completed                                         │
+│  8. Ack/delete queue message                                        │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Subtitle Extraction Priority**:
+1. Manual subtitles in target language
+2. Manual subtitles in English variants (en, en-US, en-GB)
+3. Auto-generated captions in target language
+4. Auto-generated captions in English variants
+5. Fall back to WhisperX/OpenAI AI transcription
+
 **Notes**:
 - Called by Supabase Edge Functions when transcription jobs are queued
 - Uses Bearer token authentication (`PY_API_TOKEN`) instead of `X-Api-Key`
 - Processes jobs with automatic retry logic (up to `WORKER_MAX_RETRIES`)
 - Updates Supabase `documents` table status and `document_transcriptions` on completion
+- Transcription `source` field indicates origin: `"subtitle"` (platform) or `"ai"` (WhisperX/OpenAI)
+- Platform subtitles support json3 (word-level timing), VTT, and SRT formats
 
 ---
 

@@ -21,6 +21,26 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2026-01-03 | [FIX] | [TRANSCRIPTION] | VTT multi-line parsing fix + skip_subtitles behavior tests
+- Fixed VTT parser to capture multi-line subtitle text (was only capturing first line)
+- VTT parsing now accumulates text lines until next timestamp or empty line
+- Added 5 new tests: multi-line VTT parsing + skip_subtitles conditional behavior
+- Total test count: 25 passing tests for subtitle functionality
+- Files: `app/services/job_service.py`, `tests/unit/test_job_service_subtitles.py`
+- Tags: #fix #vtt #parsing #tests
+
+2026-01-03 | [FEATURE] | [TRANSCRIPTION] | Subtitle-first approach with retry logic and skip_subtitles flag
+- Job service now tries platform subtitles first (YouTube/Vimeo) before falling back to AI transcription
+- Added `_retry_with_delay()` helper for network resilience (3 attempts, 3s delay)
+- Added `_try_extract_platform_subtitles()` with retry for yt-dlp and subtitle download
+- Added `_parse_subtitles_to_segments()` supporting json3, VTT, SRT formats with word-level timing
+- Subtitle priority: manual subtitles > auto-captions > AI transcription
+- Source tracking: `transcription_source` field now set to "subtitle" or "ai"
+- Added optional `skip_subtitles` flag to job payload to force AI transcription when subtitles are inaccurate
+- 20 unit tests covering parsing, retry logic, and skip_subtitles behavior
+- Files: `app/services/job_service.py`, `app/routers/jobs.py`, `tests/unit/test_job_service_subtitles.py`, `docs/endpoints-index.md`
+- Tags: #feature #transcription #subtitles #retry #yt-dlp #robustness
+
 2026-01-02 | [FIX] | [SCREENSHOTS] | Robust timestamp parsing + Supabase bucket fix
 - `parse_timestamp_to_seconds()` now handles dict, numeric, and string inputs (fixes RunPod `'dict' object has no attribute 'strip'` error)
 - Fixed `resolve_media_placeholders()` SQL function: `public_media` bucket is PRIVATE (requires signed URLs), not public

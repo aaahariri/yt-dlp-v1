@@ -6,8 +6,8 @@ jobs that are pushed from Supabase Edge Functions via the /jobs endpoint.
 
 Job Processing Flow:
 1. Claim document (atomic pending -> processing update)
-2. Extract audio from canonical_url
-3. Transcribe audio
+2. Try to extract platform subtitles (YouTube, Vimeo, etc.) - faster & free
+3. If no subtitles: extract audio and transcribe with WhisperX/OpenAI
 4. Save transcription to document_transcriptions
 5. Mark document completed
 6. Ack (delete) queue message
@@ -18,8 +18,11 @@ On failure:
 """
 
 import os
+import re
+import json
 import uuid
 import asyncio
+import requests
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 import yt_dlp
@@ -28,12 +31,14 @@ from app.config import (
     CACHE_DIR,
     CACHE_TTL_HOURS,
     YTDLP_BINARY,
+    YTDLP_EXTRACTOR_ARGS,
     get_settings
 )
 from app.services.supabase_service import get_supabase_client
 from app.services.ytdlp_service import run_ytdlp_binary, youtube_rate_limit
 from app.services.transcription_service import _transcribe_audio_internal
 from app.utils.platform_utils import get_platform_from_url, is_youtube_url
+from app.utils.timestamp_utils import convert_srt_timestamp_to_seconds
 from app.routers.transcription import transcription_semaphore
 
 
@@ -44,6 +49,42 @@ from app.routers.transcription import transcription_semaphore
 def _now_iso() -> str:
     """Return current UTC timestamp in ISO format."""
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _retry_with_delay(
+    func,
+    max_attempts: int = 3,
+    delay_seconds: float = 3.0,
+    operation_name: str = "operation"
+):
+    """
+    Retry a synchronous function with fixed delay between attempts.
+
+    Args:
+        func: Callable to execute (no arguments)
+        max_attempts: Maximum number of attempts (default 3)
+        delay_seconds: Delay between retries in seconds (default 3.0)
+        operation_name: Name for logging purposes
+
+    Returns:
+        Result of the function call
+
+    Raises:
+        Last exception if all attempts fail
+    """
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts:
+                print(f"WARNING: {operation_name} failed (attempt {attempt}/{max_attempts}): {str(e)}")
+                print(f"INFO: Retrying in {delay_seconds}s...")
+                await asyncio.sleep(delay_seconds)
+            else:
+                print(f"ERROR: {operation_name} failed after {max_attempts} attempts: {str(e)}")
+    raise last_error
 
 
 def _ack_delete(supabase, queue_name: str, msg_id: int) -> bool:
@@ -76,6 +117,293 @@ def _ack_archive(supabase, queue_name: str, msg_id: int) -> bool:
     except Exception as e:
         print(f"WARNING: Failed to ack archive msg_id={msg_id}: {str(e)}")
         return False
+
+
+# =============================================================================
+# Platform Subtitle Extraction (Try First - Faster & Free)
+# =============================================================================
+
+def _parse_subtitles_to_segments(
+    subtitle_content: str,
+    subtitle_format: str
+) -> List[Dict[str, Any]]:
+    """
+    Parse subtitle content (json3, vtt, srt) into standardized segments.
+
+    Returns:
+        List of segments with segment_id, start, end, text (and optionally words)
+    """
+    segments = []
+
+    if subtitle_format == 'json3':
+        # Parse YouTube json3 format with word-level timing
+        data = json.loads(subtitle_content)
+        segment_id = 0
+
+        for event in data.get('events', []):
+            # Skip window/positioning events and append events
+            if 'segs' not in event or event.get('aAppend'):
+                continue
+
+            segs = event.get('segs', [])
+            # Skip newline-only segments
+            if len(segs) == 1 and segs[0].get('utf8', '').strip() in ('', '\n'):
+                continue
+
+            segment_id += 1
+            start_ms = event.get('tStartMs', 0)
+            duration_ms = event.get('dDurationMs', 0)
+
+            # Build words with timing
+            words = []
+            text_parts = []
+            for seg in segs:
+                word_text = seg.get('utf8', '').strip()
+                if not word_text or word_text == '\n':
+                    continue
+                text_parts.append(word_text)
+                offset_ms = seg.get('tOffsetMs', 0)
+                words.append({
+                    'word': word_text,
+                    'start': round((start_ms + offset_ms) / 1000.0, 3),
+                    'end': None  # Calculated below
+                })
+
+            # Calculate word end times
+            for i, word in enumerate(words):
+                if i + 1 < len(words):
+                    word['end'] = words[i + 1]['start']
+                else:
+                    word['end'] = round((start_ms + duration_ms) / 1000.0, 3)
+
+            if text_parts:
+                segment = {
+                    'segment_id': segment_id,
+                    'start': round(start_ms / 1000.0, 3),
+                    'end': round((start_ms + duration_ms) / 1000.0, 3),
+                    'text': ' '.join(text_parts)
+                }
+                if words:
+                    segment['words'] = words
+                segments.append(segment)
+
+    elif subtitle_format == 'vtt':
+        # Parse VTT format
+        segment_id = 0
+        lines = subtitle_content.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if '-->' in line:
+                time_match = re.match(r'(\d+:\d+:\d+\.\d+)\s+-->\s+(\d+:\d+:\d+\.\d+)', line)
+                if time_match:
+                    # Collect all text lines after timestamp until next timestamp or empty line
+                    text_lines = []
+                    j = i + 1
+                    while j < len(lines):
+                        text_line = lines[j].strip()
+                        # Stop at empty line or next timestamp
+                        if not text_line or '-->' in text_line:
+                            break
+                        text_lines.append(text_line)
+                        j += 1
+
+                    # Join all text lines and strip HTML tags
+                    combined_text = ' '.join(text_lines)
+                    cleaned_text = re.sub(r'<[^>]+>', '', combined_text).strip()
+
+                    if cleaned_text:
+                        segment_id += 1
+                        segments.append({
+                            "segment_id": segment_id,
+                            "start": convert_srt_timestamp_to_seconds(time_match.group(1)),
+                            "end": convert_srt_timestamp_to_seconds(time_match.group(2)),
+                            "text": cleaned_text
+                        })
+
+                    # Move past the text lines we just processed
+                    i = j
+                    continue
+            i += 1
+
+    elif subtitle_format == 'srt':
+        # Parse SRT format
+        segment_id = 0
+        srt_blocks = subtitle_content.strip().split('\n\n')
+        for block in srt_blocks:
+            lines = block.strip().split('\n')
+            if len(lines) >= 3:
+                timestamp_line = lines[1]
+                time_match = re.match(r'(\d+:\d+:\d+,\d+)\s+-->\s+(\d+:\d+:\d+,\d+)', timestamp_line)
+                if time_match:
+                    segment_id += 1
+                    text = ' '.join(lines[2:]).strip()
+                    text = re.sub(r'<[^>]+>', '', text)
+                    if text:
+                        segments.append({
+                            "segment_id": segment_id,
+                            "start": convert_srt_timestamp_to_seconds(time_match.group(1)),
+                            "end": convert_srt_timestamp_to_seconds(time_match.group(2)),
+                            "text": text
+                        })
+
+    return segments
+
+
+async def _try_extract_platform_subtitles(
+    url: str,
+    lang: str = None,
+    include_auto_captions: bool = True
+) -> Optional[Dict[str, Any]]:
+    """
+    Try to extract subtitles from the video platform (YouTube, Vimeo, etc.).
+
+    This is faster and free compared to AI transcription. Prioritizes manual
+    subtitles over auto-generated ones when available.
+
+    Args:
+        url: Video URL
+        lang: Preferred language code (e.g., 'en', 'es'). Defaults to English.
+        include_auto_captions: Whether to use auto-generated captions if no manual subs
+
+    Returns:
+        Dict with segments, language, source info if successful, None if no subtitles
+    """
+    target_lang = lang or 'en'
+
+    # Apply rate limiting for YouTube
+    if is_youtube_url(url):
+        await youtube_rate_limit()
+
+    try:
+        # Configure yt-dlp for subtitle extraction only
+        ydl_opts = {
+            'writesubtitles': True,
+            'writeautomaticsub': include_auto_captions,
+            'skip_download': True,
+            'quiet': True,
+            'subtitleslangs': [target_lang],
+            'extractor_args': YTDLP_EXTRACTOR_ARGS,
+        }
+
+        # Retry yt-dlp extraction (3 attempts, 3s delay)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = await _retry_with_delay(
+                    func=lambda: ydl.extract_info(url, download=False),
+                    max_attempts=3,
+                    delay_seconds=3.0,
+                    operation_name="yt-dlp subtitle extraction"
+                )
+        except Exception as e:
+            print(f"WARNING: Platform subtitle extraction failed after retries: {str(e)}")
+            return None
+
+        # Get video metadata
+        title = info.get("title", "Unknown")
+        duration = info.get("duration", 0)
+        video_id = info.get("id")
+        platform = get_platform_from_url(url)
+
+        # Extract subtitles - prioritize manual over auto-generated
+        manual_subs = info.get('subtitles', {})
+        auto_captions = info.get('automatic_captions', {})
+
+        # Try to find subtitles in this order:
+        # 1. Manual subtitles in target language
+        # 2. Manual subtitles in English variants
+        # 3. Auto-captions in target language (if enabled)
+        # 4. Auto-captions in English variants (if enabled)
+
+        available_subs = None
+        actual_lang = target_lang
+        is_auto_generated = False
+
+        # Try manual subtitles first (higher quality)
+        if manual_subs.get(target_lang):
+            available_subs = manual_subs[target_lang]
+            actual_lang = target_lang
+        else:
+            # Try English fallback for manual
+            for fallback in ['en', 'en-US', 'en-GB']:
+                if manual_subs.get(fallback):
+                    available_subs = manual_subs[fallback]
+                    actual_lang = fallback
+                    break
+
+        # If no manual subs found and auto-captions enabled, try auto
+        if not available_subs and include_auto_captions:
+            if auto_captions.get(target_lang):
+                available_subs = auto_captions[target_lang]
+                actual_lang = target_lang
+                is_auto_generated = True
+            else:
+                for fallback in ['en', 'en-US', 'en-GB']:
+                    if auto_captions.get(fallback):
+                        available_subs = auto_captions[fallback]
+                        actual_lang = fallback
+                        is_auto_generated = True
+                        break
+
+        if not available_subs:
+            print(f"INFO: No subtitles available for {url[:50]}...")
+            return None
+
+        # Get the best subtitle format (prefer json3 for word-level timing)
+        subtitle_info = None
+        for sub in available_subs:
+            if sub.get('ext') == 'json3':
+                subtitle_info = sub
+                break
+        if not subtitle_info:
+            for sub in available_subs:
+                if sub.get('ext') in ['vtt', 'srt']:
+                    subtitle_info = sub
+                    break
+        if not subtitle_info:
+            subtitle_info = available_subs[0]
+
+        subtitle_url = subtitle_info.get('url')
+        subtitle_format = subtitle_info.get('ext', 'unknown')
+
+        # Download subtitle content with retry (3 attempts, 3s delay)
+        try:
+            response = await _retry_with_delay(
+                func=lambda: requests.get(subtitle_url, timeout=30),
+                max_attempts=3,
+                delay_seconds=3.0,
+                operation_name="subtitle content download"
+            )
+            response.raise_for_status()
+            subtitle_content = response.text
+        except Exception as e:
+            print(f"WARNING: Failed to download subtitles after retries: {str(e)}")
+            return None
+
+        # Parse subtitles into segments
+        segments = _parse_subtitles_to_segments(subtitle_content, subtitle_format)
+
+        if not segments:
+            print(f"WARNING: Subtitle parsing returned no segments")
+            return None
+
+        sub_type = "auto-generated" if is_auto_generated else "manual"
+        print(f"INFO: Extracted {len(segments)} segments from {sub_type} {subtitle_format} subtitles ({actual_lang})")
+
+        return {
+            "segments": segments,
+            "language": actual_lang,
+            "title": title,
+            "duration": duration,
+            "video_id": video_id,
+            "platform": platform,
+            "source_format": subtitle_format,
+            "is_auto_generated": is_auto_generated
+        }
+
+    except Exception as e:
+        print(f"WARNING: Platform subtitle extraction failed: {str(e)}")
+        return None
 
 
 # =============================================================================
@@ -298,71 +626,134 @@ async def process_single_job(
         print(f"INFO: Document {document_id}: {media_format} from {media_url[:60]}...")
 
         # =================================================================
-        # Step 4: Extract audio
+        # Step 4: Try platform subtitles first (faster & free)
         # =================================================================
-        current_step = f"extracting audio from {media_url[:60]}"
+        current_step = "extracting platform subtitles"
 
-        print(f"INFO: Extracting audio from URL...")
-        try:
-            audio_result = await _extract_audio_from_url(media_url)
-            audio_file = audio_result["audio_file"]
-            print(f"INFO: Audio extracted: {audio_file}")
-        except Exception as audio_err:
-            raise Exception(f"Audio extraction failed: {str(audio_err)}")
+        subtitle_result = None
+        transcription_source = None  # Will be "subtitle" or "ai"
+
+        # Check if skip_subtitles flag is set (optional, defaults to False)
+        skip_subtitles = job.get("skip_subtitles", False)
+
+        # Only try subtitles for video format (audio-only won't have platform subs)
+        # and if skip_subtitles flag is not set
+        if media_format == "video" and not skip_subtitles:
+            print(f"INFO: Trying to extract platform subtitles...")
+            subtitle_result = await _try_extract_platform_subtitles(
+                url=media_url,
+                lang=doc.get("lang"),
+                include_auto_captions=True
+            )
+        elif skip_subtitles:
+            print(f"INFO: Skipping platform subtitles (skip_subtitles=True), using AI transcription")
+
+        if subtitle_result:
+            # Success! Use platform subtitles
+            transcription_source = "subtitle"
+            segments = subtitle_result["segments"]
+            detected_language = subtitle_result["language"]
+            video_duration = subtitle_result.get("duration")
+            video_id = subtitle_result.get("video_id")
+            platform = subtitle_result.get("platform")
+
+            sub_type = "auto-generated" if subtitle_result.get("is_auto_generated") else "manual"
+            print(f"INFO: Using {sub_type} platform subtitles ({len(segments)} segments)")
+
+            # Build metadata for subtitle source
+            settings = get_settings()
+            segment_count = len(segments)
+            word_count = sum(len(s.get('text', '').split()) for s in segments)
+
+            metadata = {
+                "source_format": subtitle_result.get("source_format"),
+                "is_auto_generated": subtitle_result.get("is_auto_generated", False),
+                "provider": settings.provider_name,
+                "platform": platform,
+                "duration": video_duration,
+                "word_count": word_count,
+                "segment_count": segment_count
+            }
+
+        else:
+            # =================================================================
+            # Step 5: Extract audio (fallback when no subtitles)
+            # =================================================================
+            current_step = f"extracting audio from {media_url[:60]}"
+
+            print(f"INFO: No platform subtitles available, extracting audio...")
+            try:
+                audio_result = await _extract_audio_from_url(media_url)
+                audio_file = audio_result["audio_file"]
+                print(f"INFO: Audio extracted: {audio_file}")
+            except Exception as audio_err:
+                raise Exception(f"Audio extraction failed: {str(audio_err)}")
+
+            # =================================================================
+            # Step 6: Transcribe audio with WhisperX/OpenAI
+            # =================================================================
+            current_step = f"transcribing audio with {provider}/{model_size}"
+
+            print(f"INFO: Transcribing with provider={provider} model={model_size}...")
+            try:
+                async with transcription_semaphore:
+                    transcription = await _transcribe_audio_internal(
+                        audio_file=audio_file,
+                        language=doc.get("lang"),
+                        model_size=model_size,
+                        provider=provider,
+                        output_format="json",
+                        video_id=audio_result.get("video_id"),
+                        url=media_url,
+                        duration=audio_result.get("duration"),
+                        platform=audio_result.get("platform")
+                    )
+            except Exception as transcribe_err:
+                raise Exception(f"Transcription failed: {str(transcribe_err)}")
+
+            transcription_source = "ai"
+            segments = transcription.get("segments", [])
+            detected_language = transcription.get("language", "unknown")
+            video_duration = audio_result.get("duration")
+
+            # Ensure all segments have segment_id
+            for idx, seg in enumerate(segments, start=1):
+                if 'segment_id' not in seg:
+                    seg['segment_id'] = idx
+
+            print(f"INFO: AI transcription complete: {len(segments)} segments")
+
+            # Build metadata for AI transcription
+            settings = get_settings()
+            trans_metadata = transcription.get("metadata", {})
+            segment_count = len(segments)
+            word_count = sum(len(s.get('text', '').split()) for s in segments)
+
+            metadata = {
+                "model": f"WhisperX-{model_size}" if provider == "local" else "whisper-1",
+                "provider": settings.provider_name,
+                "duration": video_duration,
+                "processing_time": trans_metadata.get("transcription_time"),
+                "word_count": word_count,
+                "segment_count": segment_count
+            }
 
         # =================================================================
-        # Step 5: Transcribe audio (with semaphore for concurrency)
-        # =================================================================
-        current_step = f"transcribing audio with {provider}/{model_size}"
-
-        print(f"INFO: Transcribing with provider={provider} model={model_size}...")
-        try:
-            async with transcription_semaphore:
-                transcription = await _transcribe_audio_internal(
-                    audio_file=audio_file,
-                    language=doc.get("lang"),
-                    model_size=model_size,
-                    provider=provider,
-                    output_format="json",
-                    video_id=audio_result.get("video_id"),
-                    url=media_url,
-                    duration=audio_result.get("duration"),
-                    platform=audio_result.get("platform")
-                )
-        except Exception as transcribe_err:
-            raise Exception(f"Transcription failed: {str(transcribe_err)}")
-
-        segments = transcription.get("segments", [])
-        print(f"INFO: Transcription complete: {len(segments)} segments")
-
-        # =================================================================
-        # Step 6: Upsert to document_transcriptions
+        # Step 7: Upsert to document_transcriptions
         # =================================================================
         current_step = "saving transcription to database"
 
-        print(f"INFO: Saving transcription to document_transcriptions...")
+        print(f"INFO: Saving {transcription_source} transcription to document_transcriptions...")
 
-        # Calculate stats for logging (not stored in DB)
+        # Calculate stats (may already be set, but ensure consistency)
         segment_count = len(segments)
         word_count = sum(len(s.get('text', '').split()) for s in segments)
-
-        # Build concise metadata
-        settings = get_settings()
-        trans_metadata = transcription.get("metadata", {})
-        metadata = {
-            "model": f"WhisperX-{model_size}",
-            "provider": settings.provider_name,
-            "duration": audio_result.get("duration"),
-            "processing_time": trans_metadata.get("transcription_time"),
-            "word_count": word_count,
-            "segment_count": segment_count
-        }
 
         upsert_data = {
             "document_id": document_id,
             "segments": segments,
-            "language": transcription.get("language", "unknown"),
-            "source": "ai",
+            "language": detected_language,
+            "source": transcription_source,  # "subtitle" or "ai"
             "confidence_score": None,
             "metadata": metadata,
             "updated_at": _now_iso()
@@ -376,10 +767,10 @@ async def process_single_job(
         except Exception as db_err:
             raise Exception(f"Database save failed: {str(db_err)}")
 
-        print(f"INFO: Transcription saved: {word_count} words, {segment_count} segments")
+        print(f"INFO: Transcription saved ({transcription_source}): {word_count} words, {segment_count} segments")
 
         # =================================================================
-        # Step 7: Mark document completed
+        # Step 8: Mark document completed
         # =================================================================
         current_step = "marking document as completed"
 
@@ -394,16 +785,17 @@ async def process_single_job(
             raise Exception(f"Failed to mark document completed: {str(update_err)}")
 
         # =================================================================
-        # Step 8: Ack delete message
+        # Step 9: Ack delete message
         # =================================================================
         _ack_delete(supabase, queue_name, msg_id)
 
-        print(f"INFO: Job completed for document {document_id}")
+        print(f"INFO: Job completed for document {document_id} (source: {transcription_source})")
 
         return {
             "msg_id": msg_id,
             "status": "completed",
             "document_id": document_id,
+            "source": transcription_source,  # "subtitle" or "ai"
             "word_count": word_count,
             "segment_count": segment_count
         }
