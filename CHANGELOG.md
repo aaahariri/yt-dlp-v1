@@ -21,6 +21,53 @@ YYYY-MM-DD | [TYPE] | [SCOPE] | WHAT → WHY → IMPACT
 
 ## Recent Changes
 
+2026-01-04 | [FEATURE] | [YOUTUBE-AUTH] | Auto-detect login success with polling (no manual Enter needed)
+- Rewrote cookie refresh scripts to auto-detect login success via DOM checks
+- Polls every 5s for up to 5 minutes: checks avatar button, sign-in button absence, URL
+- Supports push notification 2FA: RunPod enters credentials → user approves on phone → auto-continues
+- Saved state optimization: checks if already logged in before attempting login
+- Validates essential cookies (SID, SSID, HSID, LOGIN_INFO) after extraction
+- Loads .env automatically from project root
+- Files: `scripts/refresh_youtube_cookies.py`, `scripts/refresh_youtube_cookies_async.py`
+- Tags: #feature #youtube-auth #automation #2fa
+
+2026-01-04 | [FEATURE] | [ALERTS] | Added system_alerts table with spam prevention
+- New `system_alerts` table for centralized alerting (youtube_auth_failure, startup_failure, etc.)
+- Added `send_alert()`, `send_youtube_auth_alert()`, `send_startup_alert()` functions
+- Built-in spam prevention: checks for recent similar alerts before inserting (configurable cooldown)
+- Alerts triggered on: YouTube auth failures, startup issues, cookie refresh errors
+- Added `acknowledge_alert()` and `get_unacknowledged_alerts()` for alert management
+- Documented in Supabase-Functions-Usage.md with Python usage and CURL examples
+- Files: `app/services/supabase_service.py`, `app/services/ytdlp_service.py`, `scripts/cookie_scheduler.py`, `Supabase-Functions-Usage.md`
+- Tags: #feature #alerts #monitoring #supabase
+
+2026-01-04 | [FIX] | [YOUTUBE-AUTH] | Fixed Playwright sync/async conflict in RunPod workers
+- Root cause: `sync_playwright()` cannot run inside asyncio event loops (FastAPI/RunPod context)
+- Created `refresh_youtube_cookies_async.py` using `async_playwright` for async contexts
+- Updated `cookie_scheduler.py` with `trigger_manual_refresh_async()` for async callers
+- Added `is_running_in_async_context()` detection to auto-fallback to subprocess execution
+- When sync `trigger_manual_refresh()` is called from async context, it now runs in subprocess
+- Fixes: "Playwright Sync API inside asyncio loop" errors on RunPod workers
+- Files: `scripts/refresh_youtube_cookies_async.py` (new), `scripts/cookie_scheduler.py`
+- Tags: #fix #youtube-auth #playwright #async #runpod
+
+2026-01-04 | [REFACTOR] | [TRANSCRIPTION] | Moved document_transcriptions creation to Supabase trigger
+- Trigger now creates placeholder transcription record on document INSERT (source='pending')
+- RunPod job_service.py now UPDATEs existing record instead of UPSERT
+- Ensures transcription record exists even if RunPod processing fails
+- Consolidated data creation in Supabase (single source of truth)
+- Files: `supabase/migrations/20260114_trigger_creates_transcription.sql`, `app/services/job_service.py`, `docs/supabase-integration.md`
+- Tags: #refactor #transcription #trigger #supabase
+
+2026-01-04 | [FIX] | [EDGE-FUNCTION] | Fixed consume-video-audio-transcription Edge Function RPC call
+- Edge Function was calling `pgmq_read` which is not exposed via PostgREST (500 errors)
+- Changed to `dequeue_video_audio_transcription` wrapper function (works via PostgREST)
+- Added better error handling, logging, and RunPod config validation
+- Added "Automatic Transcription Pipeline" documentation section with architecture diagram
+- Documents trigger → PGMQ queue → Edge Function → RunPod/FastAPI flow
+- Files: `supabase/functions/consume-video-audio-transcription/index.ts`, `docs/supabase-integration.md`
+- Tags: #fix #edge-function #pgmq #supabase #documentation
+
 2026-01-03 | [FIX] | [TRANSCRIPTION] | VTT multi-line parsing fix + skip_subtitles behavior tests
 - Fixed VTT parser to capture multi-line subtitle text (was only capturing first line)
 - VTT parsing now accumulates text lines until next timestamp or empty line

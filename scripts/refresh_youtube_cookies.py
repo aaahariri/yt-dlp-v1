@@ -5,6 +5,12 @@ YouTube Cookie Refresh Script using Playwright
 Automates YouTube login and exports cookies in Netscape format for yt-dlp.
 Can run headless (automated) or headed (for 2FA/debugging).
 
+Features:
+- Auto-detects login success (no manual Enter press needed)
+- Supports push notification 2FA (user approves on phone)
+- Uses saved browser state when available
+- Configurable timeouts and retry logic
+
 Usage:
     # First time setup (installs browser)
     playwright install chromium
@@ -12,7 +18,7 @@ Usage:
     # Interactive mode (shows browser, handles 2FA)
     python scripts/refresh_youtube_cookies.py --interactive
 
-    # Headless mode (for cron jobs, requires no 2FA on account)
+    # Headless mode (for automation, requires push-based 2FA or no 2FA)
     python scripts/refresh_youtube_cookies.py
 
     # Custom output path
@@ -25,7 +31,7 @@ Environment Variables:
 
 Security Notes:
     - Use a throwaway account (ban risk)
-    - Disable 2FA for automated mode, or use interactive mode
+    - Disable 2FA for automated mode, or use push-based 2FA
     - Never commit credentials or cookies to git
 """
 
@@ -37,12 +43,35 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+# Load .env file if it exists (look in script dir, parent dir, or cwd)
+try:
+    from dotenv import load_dotenv
+    # Try multiple locations for .env
+    script_dir = Path(__file__).parent
+    for env_path in [
+        script_dir.parent / '.env',  # Project root (most common)
+        script_dir / '.env',          # Scripts dir
+        Path.cwd() / '.env',          # Current working directory
+    ]:
+        if env_path.exists():
+            load_dotenv(env_path)
+            print(f"Loaded environment from: {env_path}")
+            break
+except ImportError:
+    pass  # dotenv not installed, rely on shell environment
+
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 except ImportError:
     print("Error: Playwright not installed.")
     print("Install with: pip install playwright && playwright install chromium")
     sys.exit(1)
+
+
+# Configuration
+LOGIN_CHECK_INTERVAL = 5  # seconds between login status checks
+LOGIN_CHECK_RETRIES = 60  # max retries (60 * 5s = 5 minutes max wait)
+CHALLENGE_WAIT_TIME = 300  # 5 minutes to complete 2FA challenge
 
 
 def convert_to_netscape_format(cookies: list, domain: str = ".youtube.com") -> str:
@@ -75,105 +104,248 @@ def convert_to_netscape_format(cookies: list, domain: str = ".youtube.com") -> s
     return '\n'.join(lines)
 
 
-def wait_for_login_complete(page, timeout: int = 300):
-    """Wait for YouTube login to complete by checking for logged-in indicators."""
-    print("Waiting for login to complete...")
+def check_login_status(page) -> tuple:
+    """
+    Check if user is logged into YouTube.
 
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        # Check if we're on YouTube and logged in
-        try:
-            # Look for avatar button (indicates logged in)
-            if page.locator('button#avatar-btn').count() > 0:
-                print("Login detected (avatar button found)")
-                return True
+    Returns:
+        (is_logged_in: bool, reason: str)
+    """
+    try:
+        current_url = page.url
 
-            # Alternative: check for "Sign in" button absence on youtube.com
-            if 'youtube.com' in page.url:
+        # If still on Google login pages, not logged in yet
+        if 'accounts.google.com' in current_url:
+            if 'challenge' in current_url or 'signin/v2/challenge' in current_url:
+                return False, "2fa_challenge"
+            elif 'signin' in current_url:
+                return False, "login_page"
+            else:
+                return False, "google_auth"
+
+        # If on YouTube, check for logged-in indicators
+        if 'youtube.com' in current_url:
+            # Check for avatar button (strongest indicator of logged in)
+            avatar_selectors = [
+                'button#avatar-btn',
+                'ytd-topbar-menu-button-renderer #avatar-btn',
+                'img.yt-spec-avatar-shape__avatar',
+                '#avatar-btn img',
+            ]
+
+            for selector in avatar_selectors:
+                try:
+                    if page.locator(selector).count() > 0:
+                        return True, "avatar_found"
+                except Exception:
+                    pass
+
+            # Check for absence of sign-in button (secondary indicator)
+            try:
                 sign_in_buttons = page.locator('a[href*="accounts.google.com/ServiceLogin"]').count()
-                if sign_in_buttons == 0 and page.locator('ytd-masthead').count() > 0:
-                    # On YouTube with masthead but no sign-in link
-                    time.sleep(2)  # Extra wait for cookies to settle
-                    return True
-        except Exception:
-            pass
+                # Also check for the "Sign in" text button
+                sign_in_text = page.locator('ytd-button-renderer:has-text("Sign in")').count()
 
-        time.sleep(1)
+                if sign_in_buttons == 0 and sign_in_text == 0:
+                    # No sign-in buttons and we're on YouTube - likely logged in
+                    # Double-check by looking for user menu
+                    if page.locator('ytd-topbar-menu-button-renderer').count() > 0:
+                        return True, "no_signin_button"
+            except Exception:
+                pass
 
-    return False
+            return False, "youtube_not_logged_in"
 
+        return False, f"unknown_page:{current_url[:50]}"
 
-def login_to_youtube(page, email: str, password: str, interactive: bool = False):
-    """
-    Perform YouTube/Google login.
-
-    For accounts with 2FA:
-    - Use interactive mode (--interactive flag)
-    - Or disable 2FA on the throwaway account
-    """
-    print(f"Navigating to YouTube login...")
-
-    # Go to YouTube and click sign in
-    page.goto('https://www.youtube.com')
-    time.sleep(2)
-
-    # Click sign in button
-    try:
-        sign_in_btn = page.locator('a[href*="accounts.google.com/ServiceLogin"]').first
-        sign_in_btn.click(timeout=10000)
-    except Exception:
-        # Try alternative sign in button
-        page.goto('https://accounts.google.com/ServiceLogin?service=youtube')
-
-    time.sleep(2)
-
-    # Enter email
-    print("Entering email...")
-    try:
-        email_input = page.locator('input[type="email"]')
-        email_input.fill(email)
-        page.locator('#identifierNext button, [data-idom-class*="nCP5yc"]').first.click()
-        time.sleep(3)
     except Exception as e:
-        print(f"Error entering email: {e}")
-        if interactive:
-            print("Please enter email manually in the browser...")
-            input("Press Enter when ready to continue...")
+        return False, f"check_error:{str(e)[:50]}"
 
-    # Enter password
-    print("Entering password...")
+
+def wait_for_login_success(page, timeout_seconds: int = 300, check_interval: int = 5) -> tuple:
+    """
+    Poll for successful login with configurable timeout.
+
+    Args:
+        page: Playwright page object
+        timeout_seconds: Max time to wait for login
+        check_interval: Seconds between status checks
+
+    Returns:
+        (success: bool, final_reason: str)
+    """
+    max_attempts = timeout_seconds // check_interval
+    attempt = 0
+    last_reason = "unknown"
+
+    print(f"Waiting for login (max {timeout_seconds}s, checking every {check_interval}s)...")
+
+    while attempt < max_attempts:
+        is_logged_in, reason = check_login_status(page)
+        last_reason = reason
+
+        if is_logged_in:
+            print(f"✓ Login detected: {reason}")
+            return True, reason
+
+        # Show progress every 30 seconds
+        if attempt > 0 and attempt % 6 == 0:
+            elapsed = attempt * check_interval
+            print(f"  Still waiting... ({elapsed}s elapsed, status: {reason})")
+
+        # If on 2FA challenge, inform user
+        if reason == "2fa_challenge" and attempt == 0:
+            print("")
+            print("=" * 60)
+            print("2FA CHALLENGE DETECTED")
+            print("=" * 60)
+            print("Please complete the verification on your phone or device.")
+            print("The script will automatically continue once approved.")
+            print(f"Waiting up to {timeout_seconds} seconds...")
+            print("=" * 60)
+            print("")
+
+        time.sleep(check_interval)
+        attempt += 1
+
+    return False, f"timeout:{last_reason}"
+
+
+def check_already_logged_in(page) -> bool:
+    """
+    Navigate to YouTube and check if already logged in via saved state.
+
+    Returns True if already logged in, False otherwise.
+    """
     try:
-        password_input = page.locator('input[type="password"]')
-        password_input.wait_for(state='visible', timeout=10000)
-        password_input.fill(password)
-        page.locator('#passwordNext button, [data-idom-class*="nCP5yc"]').first.click()
-        time.sleep(3)
-    except Exception as e:
-        print(f"Error entering password: {e}")
-        if interactive:
-            print("Please enter password manually in the browser...")
-            input("Press Enter when ready to continue...")
+        print("Checking if already logged in via saved state...")
+        page.goto('https://www.youtube.com', timeout=30000)
+        time.sleep(3)  # Let page fully load
 
-    # Handle potential 2FA or security prompts
-    if interactive:
-        print("\n" + "="*50)
-        print("INTERACTIVE MODE")
-        print("="*50)
-        print("If you see 2FA or security prompts, complete them in the browser.")
-        print("Once you're logged into YouTube, press Enter to continue.")
-        input("\nPress Enter when logged in...")
-    else:
-        # Check for 2FA prompt
-        time.sleep(3)
-        if 'challenge' in page.url or 'signin/v2' in page.url:
-            print("\nWarning: 2FA or security challenge detected!")
-            print("Options:")
-            print("  1. Run with --interactive flag to handle manually")
-            print("  2. Disable 2FA on the throwaway account")
-            print("  3. Use an App Password if available")
+        is_logged_in, reason = check_login_status(page)
+
+        if is_logged_in:
+            print(f"✓ Already logged in via saved state ({reason})")
+            return True
+        else:
+            print(f"Not logged in yet ({reason})")
             return False
 
-    return True
+    except Exception as e:
+        print(f"Error checking login status: {e}")
+        return False
+
+
+def perform_login(page, email: str, password: str) -> bool:
+    """
+    Enter email and password on Google login page.
+
+    Returns True if credentials were entered successfully, False otherwise.
+    """
+    print("Performing login...")
+
+    try:
+        # Go to YouTube sign-in
+        page.goto('https://accounts.google.com/ServiceLogin?service=youtube')
+        time.sleep(2)
+
+        # Enter email
+        print("  Entering email...")
+        try:
+            email_input = page.locator('input[type="email"]')
+            email_input.wait_for(state='visible', timeout=10000)
+            email_input.fill(email)
+
+            # Click Next
+            next_button = page.locator('#identifierNext button, [data-idom-class*="nCP5yc"]').first
+            next_button.click()
+            time.sleep(3)
+        except Exception as e:
+            print(f"  Error entering email: {e}")
+            return False
+
+        # Enter password
+        print("  Entering password...")
+        try:
+            password_input = page.locator('input[type="password"]')
+            password_input.wait_for(state='visible', timeout=10000)
+            password_input.fill(password)
+
+            # Click Next
+            next_button = page.locator('#passwordNext button, [data-idom-class*="nCP5yc"]').first
+            next_button.click()
+            time.sleep(3)
+        except Exception as e:
+            print(f"  Error entering password: {e}")
+            return False
+
+        print("  Credentials entered, waiting for authentication...")
+        return True
+
+    except Exception as e:
+        print(f"Login error: {e}")
+        return False
+
+
+def extract_and_save_cookies(context, page, output_path: str) -> bool:
+    """
+    Extract cookies and save to file.
+
+    Returns True if successful, False otherwise.
+    """
+    try:
+        # Navigate to robots.txt to stabilize cookies (prevents rotation)
+        print("Stabilizing cookies...")
+        page.goto('https://www.youtube.com/robots.txt')
+        time.sleep(2)
+
+        # Get all cookies
+        print("Extracting cookies...")
+        cookies = context.cookies()
+
+        if not cookies:
+            print("Error: No cookies found")
+            return False
+
+        # Convert to Netscape format
+        netscape_cookies = convert_to_netscape_format(cookies)
+
+        # Count YouTube-specific cookies
+        yt_cookies = [c for c in cookies if 'youtube' in c.get('domain', '') or 'google' in c.get('domain', '')]
+        print(f"Found {len(yt_cookies)} YouTube/Google cookies")
+
+        # Check for essential cookies
+        essential_cookies = ['SID', 'SSID', 'HSID', 'LOGIN_INFO']
+        cookie_names = [c.get('name', '') for c in cookies]
+        found_essential = [c for c in essential_cookies if c in cookie_names]
+
+        if len(found_essential) < 2:
+            print(f"Warning: Missing essential cookies. Found: {found_essential}")
+        else:
+            print(f"Essential cookies present: {found_essential}")
+
+        # Save to file
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(netscape_cookies)
+
+        # Set restrictive permissions
+        os.chmod(output_path, 0o600)
+
+        print(f"✓ Cookies saved to: {output_path}")
+        print(f"  Timestamp: {datetime.now().isoformat()}")
+
+        # Save browser state for future use
+        state_path = output_path.replace('.txt', '_state.json')
+        context.storage_state(path=state_path)
+        os.chmod(state_path, 0o600)
+        print(f"✓ Browser state saved to: {state_path}")
+
+        return True
+
+    except Exception as e:
+        print(f"Error extracting cookies: {e}")
+        return False
 
 
 def refresh_cookies(
@@ -190,7 +362,7 @@ def refresh_cookies(
         email: YouTube/Google email (or from YOUTUBE_EMAIL env)
         password: YouTube/Google password (or from YOUTUBE_PASSWORD env)
         output_path: Path to save cookies.txt (or from YTDLP_COOKIES_FILE env)
-        interactive: Show browser window for manual intervention
+        interactive: Show browser window (for debugging/manual intervention)
         timeout: Max seconds to wait for login
 
     Returns:
@@ -207,10 +379,16 @@ def refresh_cookies(
         print("or pass --email and --password arguments.")
         return False
 
-    print(f"Starting YouTube cookie refresh...")
+    print("")
+    print("=" * 60)
+    print("YouTube Cookie Refresh")
+    print("=" * 60)
+    print(f"Email: {email}")
     print(f"Output: {output_path}")
-    print(f"Mode: {'Interactive' if interactive else 'Headless'}")
-    print()
+    print(f"Mode: {'Interactive (browser visible)' if interactive else 'Headless'}")
+    print(f"Login timeout: {timeout}s")
+    print("=" * 60)
+    print("")
 
     with sync_playwright() as p:
         # Launch browser
@@ -227,7 +405,7 @@ def refresh_cookies(
         has_saved_state = os.path.exists(state_path)
 
         if has_saved_state:
-            print(f"Loading saved browser state from: {state_path}")
+            print(f"Found saved browser state: {state_path}")
 
         # Create context with realistic settings (and saved state if available)
         context = browser.new_context(
@@ -240,57 +418,55 @@ def refresh_cookies(
         page = context.new_page()
 
         try:
-            # Perform login
-            login_success = login_to_youtube(page, email, password, interactive)
+            # Step 1: Check if already logged in via saved state
+            if has_saved_state:
+                if check_already_logged_in(page):
+                    # Already logged in! Just extract fresh cookies
+                    if extract_and_save_cookies(context, page, output_path):
+                        print("")
+                        print("=" * 60)
+                        print("SUCCESS: Cookies refreshed using saved state")
+                        print("=" * 60)
+                        browser.close()
+                        return True
 
-            if not login_success and not interactive:
-                print("Login failed. Try running with --interactive flag.")
+            # Step 2: Perform login
+            if not perform_login(page, email, password):
+                print("Failed to enter credentials")
                 browser.close()
                 return False
 
-            # Wait for login to complete
-            if not wait_for_login_complete(page, timeout):
-                print("Timeout waiting for login. Try running with --interactive flag.")
+            # Step 3: Wait for login to complete (auto-detect, no manual Enter needed)
+            success, reason = wait_for_login_success(page, timeout_seconds=timeout)
+
+            if not success:
+                print("")
+                print("=" * 60)
+                print("LOGIN FAILED")
+                print("=" * 60)
+                print(f"Reason: {reason}")
+                print("")
+                if 'timeout' in reason:
+                    print("The login process timed out.")
+                    print("Possible causes:")
+                    print("  - 2FA challenge not completed in time")
+                    print("  - Network issues")
+                    print("  - Google security block")
+                print("")
+                print("Try running with --interactive flag to see the browser.")
+                print("=" * 60)
                 browser.close()
                 return False
 
-            # Navigate to robots.txt to stabilize cookies (prevents rotation)
-            print("Navigating to robots.txt to stabilize cookies...")
-            page.goto('https://www.youtube.com/robots.txt')
-            time.sleep(2)
-
-            # Get all cookies
-            print("Extracting cookies...")
-            cookies = context.cookies()
-
-            if not cookies:
-                print("Error: No cookies found after login.")
+            # Step 4: Extract and save cookies
+            if not extract_and_save_cookies(context, page, output_path):
                 browser.close()
                 return False
 
-            # Convert to Netscape format
-            netscape_cookies = convert_to_netscape_format(cookies)
-
-            # Count YouTube-specific cookies
-            yt_cookies = [c for c in cookies if 'youtube' in c.get('domain', '') or 'google' in c.get('domain', '')]
-            print(f"Found {len(yt_cookies)} YouTube/Google cookies")
-
-            # Save to file
-            output_file = Path(output_path)
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            output_file.write_text(netscape_cookies)
-
-            # Set restrictive permissions
-            os.chmod(output_path, 0o600)
-
-            print(f"\nCookies saved to: {output_path}")
-            print(f"Timestamp: {datetime.now().isoformat()}")
-
-            # Also save Playwright state for future use (updates existing if present)
-            context.storage_state(path=state_path)
-            os.chmod(state_path, 0o600)
-            print(f"Browser state saved to: {state_path}")
-
+            print("")
+            print("=" * 60)
+            print("SUCCESS: YouTube cookies refreshed")
+            print("=" * 60)
             browser.close()
             return True
 
@@ -338,7 +514,7 @@ Environment Variables:
     parser.add_argument(
         '--interactive', '-i',
         action='store_true',
-        help='Show browser window (required for 2FA accounts)'
+        help='Show browser window (useful for 2FA or debugging)'
     )
     parser.add_argument(
         '--timeout', '-t',

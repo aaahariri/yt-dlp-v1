@@ -52,6 +52,21 @@ except ImportError:
     refresh_cookies = None
     logging.warning("Could not import refresh_youtube_cookies module")
 
+try:
+    from refresh_youtube_cookies_async import refresh_cookies_async, is_running_in_async_context
+except ImportError:
+    refresh_cookies_async = None
+    is_running_in_async_context = lambda: False
+    logging.warning("Could not import refresh_youtube_cookies_async module")
+
+# Import alert functions (optional, graceful fallback if not available)
+try:
+    from app.services.supabase_service import send_youtube_auth_alert, send_startup_alert
+except ImportError:
+    send_youtube_auth_alert = None
+    send_startup_alert = None
+    logging.warning("Could not import alert functions from supabase_service")
+
 
 # Configure logging
 logging.basicConfig(
@@ -65,6 +80,15 @@ _scheduler: Optional[BackgroundScheduler] = None
 _refresh_interval_days: int = 5
 _last_refresh_time: Optional[datetime] = None
 _last_refresh_status: str = "never_run"
+
+
+def _send_auth_alert(error_message: str) -> None:
+    """Send auth failure alert using supabase_service (with spam prevention)."""
+    if send_youtube_auth_alert:
+        try:
+            send_youtube_auth_alert(error_message)
+        except Exception as e:
+            logger.warning(f"Failed to send auth alert: {e}")
 
 
 def get_config_from_env() -> dict:
@@ -206,6 +230,7 @@ def startup_cookie_check():
             logger.error("")
             logger.error("See Deploy.md for details.")
             logger.error("=" * 60)
+            _send_auth_alert(f"Startup cookie refresh failed: {result.get('error')}")
     else:
         logger.info(f"✓ Cookies are valid ({reason})")
         logger.info(f"File: {config['cookies_file']}")
@@ -285,22 +310,104 @@ def scheduled_cookie_refresh():
             logger.error("See Deploy.md for details.")
             logger.error("=" * 60)
             _last_refresh_status = "failed_refresh_error"
+            _send_auth_alert("Scheduled cookie refresh failed - possible 2FA or security challenge")
 
     except Exception as e:
         logger.error(f"✗ Cookie refresh failed with exception: {str(e)}")
         logger.exception("Full traceback:")
         _last_refresh_status = f"failed_exception: {str(e)}"
         _last_refresh_time = datetime.now()
+        _send_auth_alert(f"Cookie refresh exception: {str(e)}")
 
     logger.info("=" * 60)
+
+
+async def trigger_manual_refresh_async() -> dict:
+    """
+    Async version of manual cookie refresh.
+    Use this when calling from an async context (FastAPI, RunPod workers, etc.)
+    """
+    global _last_refresh_time, _last_refresh_status
+
+    logger.info("Manual cookie refresh triggered (async)")
+
+    config = get_config_from_env()
+
+    # Validate configuration
+    if not config['youtube_email'] or not config['youtube_password']:
+        return {
+            "success": False,
+            "error": "YOUTUBE_EMAIL or YOUTUBE_PASSWORD not configured",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    if not refresh_cookies_async:
+        return {
+            "success": False,
+            "error": "refresh_youtube_cookies_async module not available",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    try:
+        logger.info(f"Refreshing cookies for: {config['youtube_email']} (async mode)")
+
+        success = await refresh_cookies_async(
+            email=config['youtube_email'],
+            password=config['youtube_password'],
+            output_path=config['cookies_file'],
+            timeout=300
+        )
+
+        _last_refresh_time = datetime.now()
+
+        if success:
+            logger.info("✓ Manual cookie refresh completed successfully (async)")
+            _last_refresh_status = "success_manual_async"
+            return {
+                "success": True,
+                "message": "Cookies refreshed successfully",
+                "cookies_file": config['cookies_file'],
+                "timestamp": _last_refresh_time.isoformat()
+            }
+        else:
+            logger.error("✗ Manual cookie refresh failed (async)")
+            _last_refresh_status = "failed_manual_async"
+            return {
+                "success": False,
+                "error": "Cookie refresh failed. Check server logs for details.",
+                "timestamp": datetime.now().isoformat()
+            }
+
+    except Exception as e:
+        logger.error(f"✗ Manual cookie refresh failed (async): {str(e)}")
+        logger.exception("Full traceback:")
+        _last_refresh_status = f"failed_manual_async_exception: {str(e)}"
+        _last_refresh_time = datetime.now()
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": _last_refresh_time.isoformat()
+        }
 
 
 def trigger_manual_refresh() -> dict:
     """
     Manually trigger a cookie refresh immediately.
     Returns status dict with success/failure info.
+
+    NOTE: If called from an async context, this will automatically
+    use the async version to avoid Playwright sync/async conflicts.
     """
     global _last_refresh_time, _last_refresh_status
+
+    # Check if we're in an async context
+    if is_running_in_async_context():
+        logger.warning("Sync trigger_manual_refresh called from async context!")
+        logger.warning("This would cause Playwright sync/async conflicts.")
+        logger.warning("Use trigger_manual_refresh_async() instead, or run in subprocess.")
+
+        # Try to run in a subprocess to avoid the conflict
+        return _trigger_refresh_subprocess()
 
     logger.info("Manual cookie refresh triggered")
 
@@ -361,6 +468,67 @@ def trigger_manual_refresh() -> dict:
             "success": False,
             "error": str(e),
             "timestamp": _last_refresh_time.isoformat()
+        }
+
+
+def _trigger_refresh_subprocess() -> dict:
+    """
+    Run cookie refresh in a subprocess to avoid asyncio conflicts.
+    This is used when trigger_manual_refresh is called from an async context.
+    """
+    import subprocess
+
+    logger.info("Running cookie refresh in subprocess to avoid async conflicts...")
+
+    config = get_config_from_env()
+    script_path = Path(__file__).parent / "refresh_youtube_cookies.py"
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                "--output", config['cookies_file'],
+            ],
+            env={
+                **os.environ,
+                "YOUTUBE_EMAIL": config['youtube_email'] or "",
+                "YOUTUBE_PASSWORD": config['youtube_password'] or "",
+            },
+            capture_output=True,
+            text=True,
+            timeout=360  # 6 minute timeout
+        )
+
+        if result.returncode == 0:
+            logger.info("✓ Subprocess cookie refresh completed successfully")
+            return {
+                "success": True,
+                "message": "Cookies refreshed successfully (subprocess)",
+                "cookies_file": config['cookies_file'],
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.error(f"✗ Subprocess cookie refresh failed: {result.stderr}")
+            return {
+                "success": False,
+                "error": f"Subprocess failed: {result.stderr}",
+                "timestamp": datetime.now().isoformat()
+            }
+
+    except subprocess.TimeoutExpired:
+        logger.error("✗ Subprocess cookie refresh timed out")
+        return {
+            "success": False,
+            "error": "Cookie refresh subprocess timed out after 6 minutes",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"✗ Subprocess cookie refresh failed: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }
 
 
@@ -491,6 +659,7 @@ __all__ = [
     'start_scheduler',
     'stop_scheduler',
     'trigger_manual_refresh',
+    'trigger_manual_refresh_async',
     'get_scheduler_status',
     'cookies_need_refresh',
 ]

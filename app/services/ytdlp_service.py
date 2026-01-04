@@ -23,6 +23,7 @@ from app.config import (
     CACHE_DIR,
 )
 from scripts.cookie_scheduler import trigger_manual_refresh
+from app.services.supabase_service import send_youtube_auth_alert
 
 
 # Track last YouTube request time for rate limiting
@@ -130,6 +131,12 @@ def run_ytdlp_binary(args: list, timeout: int = 300, retry_on_auth_failure: bool
                 print("")
                 print("See Deploy.md for details.")
                 print("=" * 60)
+
+                # Send alert to system_alerts table (with 60-min cooldown)
+                send_youtube_auth_alert(
+                    error_message=refresh_result.get('error', 'Unknown error'),
+                    context={"stderr_preview": stderr[:500] if stderr else None}
+                )
 
         return stdout, stderr, returncode
 
