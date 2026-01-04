@@ -19,10 +19,18 @@ Payload Format:
     "queue": "screenshot_extraction",
     "jobs": [{
         "video_url": "https://youtube.com/...",
-        "timestamps": ["00:00:30,000", "00:01:00,000"],
+        "timestamps": [
+            {"screenshot_timestamp": 30.0, "segment_id": 1, "reason": "Chart showing...", "text": "segment text"},
+            {"screenshot_timestamp": 60.0, "segment_id": 3, "reason": "Demo of..."}
+        ],
         "quality": 2,
         "document_id": "optional-uuid"
     }]
+}
+
+Note: timestamps can be either:
+- Array of objects with screenshot_timestamp, segment_id, reason, text (recommended)
+- Array of simple values (numbers or SRT-formatted strings) for backwards compatibility
 }
 """
 
@@ -36,7 +44,8 @@ from typing import Dict, Any, List
 from app.config import CACHE_DIR, YTDLP_BINARY
 from app.services.supabase_service import (
     upload_screenshot_to_supabase,
-    save_screenshot_with_job_metadata
+    save_screenshot_with_job_metadata,
+    mark_transcription_screenshots_extracted
 )
 from app.services.screenshot_service import extract_screenshot
 from app.services.ytdlp_service import run_ytdlp_binary, youtube_rate_limit
@@ -238,6 +247,7 @@ async def _process_single_screenshot_job(
     timestamps = job.get("timestamps", [])
     quality = job.get("quality", 2)
     document_id = job.get("document_id")
+    transcription_id = job.get("transcription_id")
 
     # Validate quality parameter (FFmpeg JPEG quality range: 1-31, lower=better)
     if not isinstance(quality, int) or not (1 <= quality <= 31):
@@ -325,8 +335,24 @@ async def _process_single_screenshot_job(
 
         for ts in timestamps:
             try:
+                # Handle both simple timestamps and objects with segment_id/reason
+                # Object format: {"screenshot_timestamp": 135.4, "segment_id": 5, "reason": "...", "text": "..."}
+                # Simple format: "00:00:30,000" or 30.0
+                if isinstance(ts, dict):
+                    # Extract from object - support multiple field names for timestamp
+                    ts_value = ts.get("screenshot_timestamp") or ts.get("timestamp") or ts.get("start")
+                    segment_id = ts.get("segment_id")
+                    extraction_reason = ts.get("reason")
+                    segment_text = ts.get("text")
+                else:
+                    # Simple timestamp value
+                    ts_value = ts
+                    segment_id = None
+                    extraction_reason = None
+                    segment_text = None
+
                 # Parse timestamp to seconds
-                ts_seconds = parse_timestamp_to_seconds(ts)
+                ts_seconds = parse_timestamp_to_seconds(ts_value)
                 ts_ms = int(ts_seconds * 1000)
 
                 # Output path: {video_id}-{timestamp_ms}.jpg
@@ -342,6 +368,23 @@ async def _process_single_screenshot_job(
                 public_url = upload_result["public_url"]
 
                 # Prepare base metadata for this screenshot
+                screenshot_metadata = {
+                    "video_id": video_id,
+                    "timestamp_seconds": ts_seconds,
+                    "timestamp_formatted": format_seconds_to_srt(ts_seconds),
+                    "width": result["width"],
+                    "height": result["height"],
+                    "platform": platform.lower()
+                }
+
+                # Add segment_id and extraction_reason if provided
+                if segment_id is not None:
+                    screenshot_metadata["segment_id"] = segment_id
+                if extraction_reason:
+                    screenshot_metadata["extraction_reason"] = extraction_reason
+                if segment_text:
+                    screenshot_metadata["segment_text"] = segment_text
+
                 base_data = {
                     "type": "screenshot",
                     "storage_path": storage_path,
@@ -352,14 +395,7 @@ async def _process_single_screenshot_job(
                     "source_url_hash": hashlib.md5(video_url.encode()).hexdigest(),
                     "title": f"{video_title} - {format_seconds_to_srt(ts_seconds)}",
                     "document_id": document_id,
-                    "metadata": {
-                        "video_id": video_id,
-                        "timestamp": ts_seconds,
-                        "timestamp_formatted": format_seconds_to_srt(ts_seconds),
-                        "width": result["width"],
-                        "height": result["height"],
-                        "platform": platform.lower()
-                    }
+                    "metadata": screenshot_metadata
                 }
 
                 # Add job completion timestamp to metadata for this screenshot
@@ -382,11 +418,21 @@ async def _process_single_screenshot_job(
                 print(f"WARNING: [{job_id}] Failed to extract screenshot at {ts}: {str(e)}")
 
         # =================================================================
-        # Job Complete
+        # Job Complete - Update transcription status
         # =================================================================
         job_completed_at = _now_iso()
 
         print(f"INFO: [{job_id}] Complete - {extracted_count}/{len(timestamps)} screenshots extracted")
+
+        # Update transcription status to 'extracted' if we have a transcription_id
+        if transcription_id and extracted_count > 0:
+            mark_transcription_screenshots_extracted(
+                transcription_id=transcription_id,
+                runpod_job_id=job_id,
+                extracted_count=extracted_count
+            )
+        elif not transcription_id and extracted_count > 0:
+            print(f"WARNING: [{job_id}] No transcription_id provided - status not updated")
 
         return {
             "job_id": job_id,

@@ -331,6 +331,54 @@ def send_startup_alert(component: str, error_message: str, severity: str = "warn
     )
 
 
+# =============================================================================
+# Screenshot Status Updates
+# =============================================================================
+
+def mark_transcription_screenshots_extracted(
+    transcription_id: str,
+    runpod_job_id: str,
+    extracted_count: int
+) -> bool:
+    """
+    Mark transcription as having screenshots extracted (ready for review).
+
+    Calls the Supabase RPC function mark_transcription_screenshots_extracted
+    which sets screenshots_status = 'extracted' in the transcription metadata.
+
+    Args:
+        transcription_id: UUID of the transcription
+        runpod_job_id: RunPod job ID for tracking
+        extracted_count: Number of screenshots extracted
+
+    Returns:
+        True if update succeeded, False otherwise
+    """
+    if supabase_client is None:
+        print("WARNING: Cannot mark screenshots extracted - Supabase not configured")
+        return False
+
+    try:
+        result = supabase_client.rpc(
+            "mark_transcription_screenshots_extracted",
+            {
+                "p_transcription_id": transcription_id,
+                "p_runpod_job_id": runpod_job_id,
+                "p_extracted_count": extracted_count
+            }
+        ).execute()
+
+        success = result.data is True
+        if success:
+            print(f"INFO: Marked transcription {transcription_id[:8]}... as screenshots_status='extracted' (count: {extracted_count})")
+        else:
+            print(f"WARNING: mark_transcription_screenshots_extracted returned {result.data} for {transcription_id}")
+        return success
+    except Exception as e:
+        print(f"ERROR: Failed to mark screenshots extracted for {transcription_id}: {e}")
+        return False
+
+
 def acknowledge_alert(alert_id: str) -> bool:
     """
     Mark an alert as acknowledged.
